@@ -1,0 +1,50 @@
+import os
+from functools import cached_property
+from pathlib import Path
+
+from dotenv import load_dotenv
+from fastapi.responses import ORJSONResponse
+
+load_dotenv()
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def default_auth_root(media_root: str) -> str:
+    local_auth_root = PROJECT_ROOT / "auth"
+    if local_auth_root.exists():
+        return str(local_auth_root)
+    if PROJECT_ROOT.exists():
+        return str(local_auth_root)
+    return str(Path(media_root).parent / "auth")
+
+
+class Settings:
+    app_env: str = os.getenv("APP_ENV", "development")
+    admin_token: str = os.getenv("ADMIN_TOKEN", "change-me")
+    database_url: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://user:password@postgres:5432/archivelens",
+    )
+    redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    media_root: str = os.getenv("MEDIA_ROOT", "/data/media")
+    auth_root: str = os.getenv("AUTH_ROOT", default_auth_root(media_root))
+    weibo_detail_fallback_limit: int = int(os.getenv("WEIBO_DETAIL_FALLBACK_LIMIT", "20"))
+    monitor_scan_interval: int = int(os.getenv("MONITOR_SCAN_INTERVAL", "30"))
+    session_secret_key: str = os.getenv("SESSION_SECRET_KEY", "change-me")
+
+    @cached_property
+    def cors_origins(self) -> list[str]:
+        raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @property
+    def default_response_class(self) -> type[ORJSONResponse]:
+        return ORJSONResponse
+
+    def platform_auth_state_path(self, platform: str) -> Path:
+        return Path(self.auth_root) / f"{platform}.json"
+
+
+settings = Settings()

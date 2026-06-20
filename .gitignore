@@ -5,6 +5,11 @@
 .env
 .env.*
 !.env.example
+!.env.prod.example
+.auth/
+auth/
+data/auth/
+data/.auth/
 
 # Python
 __pycache__/
@@ -32,6 +37,7 @@ yarn-error.log*
 pnpm-debug.log*
 .vite/
 coverage/
+*.tsbuildinfo
 
 # Build output
 frontend/dist/
@@ -41,12 +47,14 @@ backend/dist/
 *.log
 logs/
 data/logs/
+celerybeat-schedule*
 
 # Runtime data
 data/postgres/
 data/redis/
 data/media/
 data/backups/
+spikes/platform_probe/output/
 
 # IDE
 .idea/
