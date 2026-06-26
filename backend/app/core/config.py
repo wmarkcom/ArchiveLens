@@ -30,8 +30,11 @@ class Settings:
     redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
     media_root: str = os.getenv("MEDIA_ROOT", "/data/media")
     auth_root: str = os.getenv("AUTH_ROOT", default_auth_root(media_root))
-    weibo_detail_fallback_limit: int = int(os.getenv("WEIBO_DETAIL_FALLBACK_LIMIT", "20"))
+    weibo_detail_fallback_limit: int = int(os.getenv("WEIBO_DETAIL_FALLBACK_LIMIT", "3"))
+    weibo_detail_timeout_ms: int = int(os.getenv("WEIBO_DETAIL_TIMEOUT_MS", "10000"))
     monitor_scan_interval: int = int(os.getenv("MONITOR_SCAN_INTERVAL", "30"))
+    monitor_check_soft_time_limit: int = int(os.getenv("MONITOR_CHECK_SOFT_TIME_LIMIT", "180"))
+    monitor_check_time_limit: int = int(os.getenv("MONITOR_CHECK_TIME_LIMIT", "240"))
     session_secret_key: str = os.getenv("SESSION_SECRET_KEY", "change-me")
 
     @cached_property

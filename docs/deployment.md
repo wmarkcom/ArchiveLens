@@ -85,7 +85,10 @@ mkdir -p data/auth data/media data/logs
 - `REDIS_URL`：填写服务器已有 Redis 的连接地址。
 - `MEDIA_ROOT=/data/media`
 - `AUTH_ROOT=/data/auth`
-- `WEIBO_DETAIL_FALLBACK_LIMIT=20`：微博最近 N 条会打开详情页补全文；如果详情页文本更长，才覆盖列表接口文本。
+- `WEIBO_DETAIL_FALLBACK_LIMIT=3`：每轮最多补全文的微博条数；生产环境不要设太大。
+- `WEIBO_DETAIL_TIMEOUT_MS=10000`：微博详情页补全文单页超时，避免 Playwright 长时间卡住。
+- `MONITOR_CHECK_SOFT_TIME_LIMIT=180`：单个博主检查任务软超时秒数。
+- `MONITOR_CHECK_TIME_LIMIT=240`：单个博主检查任务硬超时秒数。
 
 如果 PostgreSQL / Redis 容器已把端口发布到宿主机，推荐在容器内通过 `host.docker.internal` 访问：
 
@@ -362,23 +365,46 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f media-wor
 
 微博列表接口 `/ajax/statuses/mymblog` 有时只返回摘要文本，长微博需要打开详情页再补全文。
 
-确认 `.env.prod` 已开启：
+当前生产策略是：列表接口负责自动采集最新内容；详情页只对“新微博”或“疑似截断微博”做限量补全文，并且详情页有短超时兜底。
+
+确认 `.env.prod` 配置：
 
 ```bash
 cd /home/ubuntu/project/ArchiveLens
-grep '^WEIBO_DETAIL_FALLBACK_LIMIT=' .env.prod
+grep -E '^(WEIBO_DETAIL_FALLBACK_LIMIT|WEIBO_DETAIL_TIMEOUT_MS|MONITOR_CHECK)' .env.prod
 ```
 
 推荐值：
 
 ```env
-WEIBO_DETAIL_FALLBACK_LIMIT=20
+WEIBO_DETAIL_FALLBACK_LIMIT=3
+WEIBO_DETAIL_TIMEOUT_MS=10000
+MONITOR_CHECK_SOFT_TIME_LIMIT=180
+MONITOR_CHECK_TIME_LIMIT=240
 ```
 
-含义：每次采集最近 20 条微博时都会尝试打开详情页补全文；只有详情页正文比列表接口正文更长时才覆盖入库，避免详情页异常时污染原文。修改后需要重启后端和 worker：
+不要把 `WEIBO_DETAIL_FALLBACK_LIMIT` 长期设为 `20` 这类较大值，否则微博详情页/Chromium 可能拖慢 worker，造成 Redis 队列积压。修改后需要强制重建相关容器，让 `.env.prod` 重新加载：
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --force-recreate backend worker beat
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --force-recreate backend worker beat
+```
+
+如果已经出现 worker 长时间不消费、任务大量积压，先停 beat、清队列、清锁，再重建：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop beat
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend celery -A app.workers.celery_app purge -f
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend python - <<'PY'
+from redis import Redis
+from app.core.config import settings
+
+r = Redis.from_url(settings.redis_url, decode_responses=True)
+keys = list(r.scan_iter("archivelens:monitor:account:*:scheduled"))
+if keys:
+    r.delete(*keys)
+print("deleted locks:", len(keys))
+PY
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --force-recreate backend worker media-worker beat
 ```
 
 ## 备份建议

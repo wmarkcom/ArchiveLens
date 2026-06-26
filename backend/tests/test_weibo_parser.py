@@ -1,6 +1,8 @@
 from app.services.platform.weibo import (
     WeiboCollectOptions,
+    WeiboAdapter,
     choose_weibo_full_text,
+    clean_weibo_detail_text,
     extract_weibo_uid,
     has_weibo_auth_cookie,
     image_urls_from_status,
@@ -60,6 +62,18 @@ def test_choose_weibo_full_text_keeps_list_text_when_detail_is_shorter() -> None
     assert choose_weibo_full_text(item, "短正文") == "列表接口里更完整的正文内容"
 
 
+def test_clean_weibo_detail_text_removes_translate_ui_noise() -> None:
+    detail = "收盘了，商络没有走，小亏1个多点能接受 Translate content 喜欢我家小程😽😽 为TA助威"
+
+    assert clean_weibo_detail_text(detail) == "收盘了，商络没有走，小亏1个多点能接受"
+
+
+def test_clean_weibo_detail_text_keeps_normal_body() -> None:
+    detail = "今天复盘：Translate 这个词如果出现在普通英文句子里不处理，因为不是完整 UI 文案。"
+
+    assert clean_weibo_detail_text(detail) == detail
+
+
 def test_parse_weibo_datetime_converts_to_utc() -> None:
     parsed = parse_weibo_datetime("Fri Jun 19 14:30:44 +0800 2026")
     assert parsed is not None
@@ -74,7 +88,21 @@ def test_collect_options_defaults(tmp_path) -> None:
     options = WeiboCollectOptions(storage_state_path=tmp_path / "weibo.json", uid="1642512402")
     assert options.page_no == 1
     assert options.limit == 20
-    assert options.detail_fallback_limit == 5
+    assert options.detail_fallback_limit == 3
+    assert options.detail_timeout_ms == 10000
+
+
+def test_weibo_adapter_detail_candidates(tmp_path) -> None:
+    adapter = WeiboAdapter(tmp_path / "weibo.json")
+    normal_post = normalize_weibo_status("1642512402", {"id": 1, "mid": "1", "mblogid": "A", "text_raw": "正文"})
+    truncated_post = normalize_weibo_status(
+        "1642512402",
+        {"id": 2, "mid": "2", "mblogid": "B", "text": '正文...<span class="expand">展开</span>'},
+    )
+
+    assert adapter.should_fetch_detail_for_monitor(normal_post, is_new=True)
+    assert not adapter.should_fetch_detail_for_monitor(normal_post, is_new=False)
+    assert adapter.should_fetch_detail_for_monitor(truncated_post, is_new=False)
 
 
 def test_has_weibo_auth_cookie(tmp_path) -> None:

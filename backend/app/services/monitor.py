@@ -41,25 +41,55 @@ class MonitorService:
         try:
             storage_path = _resolve_storage_path(account.platform)
             adapter = get_platform_adapter(account.platform, storage_state_path=storage_path)
+            platform_account_id = resolve_platform_account_id(
+                account.platform,
+                account.platform_account_id,
+                account.profile_url,
+            )
             result = asyncio.run(
                 adapter.fetch_recent_posts(
-                    account_id=resolve_platform_account_id(
-                        account.platform,
-                        account.platform_account_id,
-                        account.profile_url,
-                    ),
+                    account_id=platform_account_id,
                     limit=20,
                 )
             )
+            items = result.items
+            platform_post_ids = [item.platform_post_id for item in items]
+            existing_by_platform_post_id = {}
+            if platform_post_ids:
+                existing_by_platform_post_id = {
+                    post.platform_post_id: post
+                    for post in self._db.query(Post)
+                    .filter(
+                        Post.platform == account.platform,
+                        Post.platform_post_id.in_(platform_post_ids),
+                    )
+                    .all()
+                }
+            detail_candidates = [
+                item
+                for item in items
+                if adapter.should_fetch_detail_for_monitor(
+                    item,
+                    is_new=item.platform_post_id not in existing_by_platform_post_id,
+                )
+            ]
+            if detail_candidates:
+                enriched_candidates = asyncio.run(
+                    adapter.enrich_posts_with_details(
+                        platform_account_id,
+                        detail_candidates,
+                        max_count=settings.weibo_detail_fallback_limit,
+                    )
+                )
+                enriched_by_platform_post_id = {item.platform_post_id: item for item in enriched_candidates}
+                items = [enriched_by_platform_post_id.get(item.platform_post_id, item) for item in items]
+
             new_count = 0
             edited_count = 0
             affected_post_ids: set[int] = set()
 
-            for item in result.items:
-                existing = self._db.query(Post).filter(
-                    Post.platform == item.platform,
-                    Post.platform_post_id == item.platform_post_id,
-                ).first()
+            for item in items:
+                existing = existing_by_platform_post_id.get(item.platform_post_id)
 
                 new_hash = compute_content_hash(
                     platform=item.platform,
@@ -87,7 +117,7 @@ class MonitorService:
                     existing.last_collected_at = datetime.now(timezone.utc)
 
             latest_published_at = max(
-                (item.published_at for item in result.items if item.published_at is not None),
+                (item.published_at for item in items if item.published_at is not None),
                 default=None,
             )
             if latest_published_at is not None:

@@ -13,7 +13,11 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="monitor.check_account")
+@celery_app.task(
+    name="monitor.check_account",
+    soft_time_limit=settings.monitor_check_soft_time_limit,
+    time_limit=settings.monitor_check_time_limit,
+)
 def check_account(account_id: int) -> dict:
     """Check an account for new or edited content."""
     db = SessionLocal()
@@ -34,6 +38,7 @@ def check_account(account_id: int) -> dict:
         finish_worker_run(db, run_log, status="failed", result=result, error_message=str(exc))
         return result
     finally:
+        _release_account_lock_safely(account_id)
         db.close()
 
 
@@ -127,7 +132,7 @@ def _account_is_due(account: PlatformAccount, now: datetime) -> bool:
 
 def _acquire_account_lock(redis_client: Redis, account: PlatformAccount) -> bool:
     interval = max(account.check_interval or 60, 60)
-    ttl = max(interval, settings.monitor_scan_interval * 2, 60)
+    ttl = max(interval, settings.monitor_check_time_limit, settings.monitor_scan_interval * 2, 60)
     return bool(redis_client.set(_account_lock_key(account.id), "1", nx=True, ex=ttl))
 
 
@@ -136,6 +141,13 @@ def _release_account_lock(redis_client: Redis, account_id: int) -> None:
         redis_client.delete(_account_lock_key(account_id))
     except Exception:
         logger.exception("Failed to release monitor lock for account_id=%s", account_id)
+
+
+def _release_account_lock_safely(account_id: int) -> None:
+    try:
+        _release_account_lock(_redis_client(), account_id)
+    except Exception:
+        logger.exception("Failed to create Redis client for releasing monitor lock account_id=%s", account_id)
 
 
 def _account_lock_key(account_id: int) -> str:

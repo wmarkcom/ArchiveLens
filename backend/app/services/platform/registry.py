@@ -14,6 +14,7 @@ def get_platform_adapter(platform: str, *, storage_state_path: str | Path | None
         return WeiboAdapter(
             storage_state_path=storage_state_path,
             detail_fallback_limit=settings.weibo_detail_fallback_limit,
+            detail_timeout_ms=settings.weibo_detail_timeout_ms,
         )
     if platform == "xueqiu":
         if storage_state_path is None:

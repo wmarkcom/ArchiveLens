@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -30,7 +30,8 @@ class WeiboCollectOptions:
     page_no: int = 1
     limit: int = 20
     headless: bool = True
-    detail_fallback_limit: int = 5
+    detail_fallback_limit: int = 3
+    detail_timeout_ms: int = 10000
     user_agent: str = DEFAULT_USER_AGENT
 
 
@@ -82,6 +83,18 @@ def strip_weibo_html(value: str | None) -> str:
     text = text.replace("​​​", "")
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"\s*\.\.\.\s*展开$", "", text).strip()
+    return text
+
+
+def clean_weibo_detail_text(value: str | None) -> str:
+    text = strip_weibo_html(value)
+    if not text:
+        return ""
+
+    text = re.sub(r"\bTranslate content\b.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*喜欢我家.+?为TA助威.*$", "", text).strip()
+    text = re.sub(r"\s*分享这条博文.*$", "", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -179,7 +192,7 @@ def next_page_from_payload(payload: dict[str, Any], current_page: int, item_coun
 
 def choose_weibo_full_text(item: dict[str, Any], detail_text: str | None = None) -> str:
     list_text = strip_weibo_html(str(item.get("text_raw") or item.get("text") or ""))
-    detail = strip_weibo_html(detail_text)
+    detail = clean_weibo_detail_text(detail_text)
     if detail and len(detail) > len(list_text):
         return detail
     return list_text
@@ -259,11 +272,17 @@ async def collect_weibo_posts(options: WeiboCollectOptions) -> PageResult:
             payload = await fetch_mblog_payload(context, options.uid, options.page_no)
             statuses = extract_status_items(payload)[: options.limit]
             items: list[NormalizedPost] = []
+            detail_count = 0
 
             for index, status in enumerate(statuses):
                 detail_text = None
-                if index < options.detail_fallback_limit:
-                    detail_text = await fetch_detail_text(context, weibo_detail_url(options.uid, status))
+                if is_truncated_status(status) and detail_count < options.detail_fallback_limit:
+                    detail_text = await fetch_detail_text(
+                        context,
+                        weibo_detail_url(options.uid, status),
+                        timeout_ms=options.detail_timeout_ms,
+                    )
+                    detail_count += 1
                 items.append(normalize_weibo_status(options.uid, status, full_text=detail_text))
 
             return PageResult(
@@ -291,11 +310,12 @@ async def fetch_mblog_payload(
     return parse_weibo_json_body(body, response.headers.get("content-type"))
 
 
-async def fetch_detail_text(context: BrowserContext, url: str) -> str | None:
+async def fetch_detail_text(context: BrowserContext, url: str, *, timeout_ms: int = 10000) -> str | None:
     page = await context.new_page()
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(1000)
+        page.set_default_timeout(timeout_ms)
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        await page.wait_for_timeout(min(1000, max(250, timeout_ms // 10)))
         await click_expand(page)
         return await extract_best_article_text(page)
     except Exception:
@@ -347,11 +367,13 @@ class WeiboAdapter(PlatformAdapter):
         storage_state_path: str | Path,
         *,
         headless: bool = True,
-        detail_fallback_limit: int = 5,
+        detail_fallback_limit: int = 3,
+        detail_timeout_ms: int = 10000,
     ) -> None:
         self.storage_state_path = Path(storage_state_path)
         self.headless = headless
         self.detail_fallback_limit = detail_fallback_limit
+        self.detail_timeout_ms = detail_timeout_ms
 
     async def check_login(self) -> bool:
         if not self.storage_state_path.exists():
@@ -387,6 +409,46 @@ class WeiboAdapter(PlatformAdapter):
                 page_no=page_no,
                 limit=limit,
                 headless=self.headless,
-                detail_fallback_limit=self.detail_fallback_limit,
+                detail_fallback_limit=0,
+                detail_timeout_ms=self.detail_timeout_ms,
             )
         )
+
+    def should_fetch_detail_for_monitor(self, post: NormalizedPost, *, is_new: bool) -> bool:
+        return is_new or is_truncated_status(post.raw_data)
+
+    async def enrich_posts_with_details(
+        self,
+        account_id: str,
+        posts: list[NormalizedPost],
+        *,
+        max_count: int,
+    ) -> list[NormalizedPost]:
+        if max_count <= 0 or not posts:
+            return posts
+
+        candidates = posts[:max_count]
+        enriched_by_id: dict[str, NormalizedPost] = {}
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.headless)
+            context = await browser.new_context(
+                storage_state=str(self.storage_state_path),
+                user_agent=DEFAULT_USER_AGENT,
+                extra_http_headers={"Referer": f"{WEIBO_BASE_URL}/u/{account_id}"},
+            )
+            try:
+                for post in candidates:
+                    detail_text = await fetch_detail_text(
+                        context,
+                        post.original_url,
+                        timeout_ms=self.detail_timeout_ms,
+                    )
+                    full_text = choose_weibo_full_text(post.raw_data, detail_text)
+                    if full_text != (post.full_text or ""):
+                        enriched_by_id[post.platform_post_id] = replace(post, full_text=full_text)
+            finally:
+                await context.close()
+                await browser.close()
+
+        return [enriched_by_id.get(post.platform_post_id, post) for post in posts]

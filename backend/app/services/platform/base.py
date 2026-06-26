@@ -44,3 +44,15 @@ class PlatformAdapter(ABC):
         limit: int = 20,
     ) -> PageResult:
         raise NotImplementedError
+
+    def should_fetch_detail_for_monitor(self, post: NormalizedPost, *, is_new: bool) -> bool:
+        return False
+
+    async def enrich_posts_with_details(
+        self,
+        account_id: str,
+        posts: list[NormalizedPost],
+        *,
+        max_count: int,
+    ) -> list[NormalizedPost]:
+        return posts
