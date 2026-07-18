@@ -87,8 +87,11 @@ mkdir -p data/auth data/media data/logs
 - `AUTH_ROOT=/data/auth`
 - `WEIBO_DETAIL_FALLBACK_LIMIT=3`：每轮最多补全文的微博条数；生产环境不要设太大。
 - `WEIBO_DETAIL_TIMEOUT_MS=10000`：微博详情页补全文单页超时，避免 Playwright 长时间卡住。
+- `WEIBO_LIST_TIMEOUT_MS=30000`：微博轻量列表接口总超时；列表采集不会启动 Chromium。
 - `MONITOR_CHECK_SOFT_TIME_LIMIT=180`：单个博主检查任务软超时秒数。
 - `MONITOR_CHECK_TIME_LIMIT=240`：单个博主检查任务硬超时秒数。
+- `MONITOR_QUEUE_WARNING_THRESHOLD=100`、`MONITOR_QUEUE_CRITICAL_THRESHOLD=500`：检查队列告警阈值。
+- `MEDIA_QUEUE_WARNING_THRESHOLD=500`、`MEDIA_QUEUE_CRITICAL_THRESHOLD=2000`：媒体队列告警阈值。
 
 如果 PostgreSQL / Redis 容器已把端口发布到宿主机，推荐在容器内通过 `host.docker.internal` 访问：
 
@@ -126,7 +129,7 @@ ARCHIVELENS_ENV_FILE=.env.prod docker compose -f docker-compose.prod.yml --env-f
 ```
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
 如果这次部署包含 Dockerfile、依赖、前端构建或 compose 配置变更，建议强制重新构建：
@@ -365,13 +368,13 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f media-wor
 
 微博列表接口 `/ajax/statuses/mymblog` 有时只返回摘要文本，长微博需要打开详情页再补全文。
 
-当前生产策略是：列表接口负责自动采集最新内容；详情页只对“新微博”或“疑似截断微博”做限量补全文，并且详情页有短超时兜底。
+当前生产策略是：使用轻量 HTTP 客户端直接请求列表接口，自动采集最新内容，列表阶段不启动 Chromium；详情页只对“新微博”或“疑似截断微博”做限量补全文，并且详情页有短超时兜底。
 
 确认 `.env.prod` 配置：
 
 ```bash
 cd /home/ubuntu/project/ArchiveLens
-grep -E '^(WEIBO_DETAIL_FALLBACK_LIMIT|WEIBO_DETAIL_TIMEOUT_MS|MONITOR_CHECK)' .env.prod
+grep -E '^(WEIBO_|MONITOR_|MEDIA_QUEUE_)' .env.prod
 ```
 
 推荐值：
@@ -379,33 +382,42 @@ grep -E '^(WEIBO_DETAIL_FALLBACK_LIMIT|WEIBO_DETAIL_TIMEOUT_MS|MONITOR_CHECK)' .
 ```env
 WEIBO_DETAIL_FALLBACK_LIMIT=3
 WEIBO_DETAIL_TIMEOUT_MS=10000
+WEIBO_LIST_TIMEOUT_MS=30000
 MONITOR_CHECK_SOFT_TIME_LIMIT=180
 MONITOR_CHECK_TIME_LIMIT=240
+MONITOR_QUEUE_WARNING_THRESHOLD=100
+MONITOR_QUEUE_CRITICAL_THRESHOLD=500
+MEDIA_QUEUE_WARNING_THRESHOLD=500
+MEDIA_QUEUE_CRITICAL_THRESHOLD=2000
 ```
 
-不要把 `WEIBO_DETAIL_FALLBACK_LIMIT` 长期设为 `20` 这类较大值，否则微博详情页/Chromium 可能拖慢 worker，造成 Redis 队列积压。修改后需要强制重建相关容器，让 `.env.prod` 重新加载：
+不要把 `WEIBO_DETAIL_FALLBACK_LIMIT` 长期设为 `20` 这类较大值，否则微博详情页/Chromium 可能拖慢 worker，造成 Redis 队列积压。生产 Worker 使用 `prefork` 单并发和 `max-tasks-per-child`，Celery 超时可以真正终止卡死任务；相关容器启用了 `init: true`，负责回收 Chromium 孤儿进程。修改后需要强制重建相关容器，让 `.env.prod` 和 compose 配置重新加载：
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --force-recreate backend worker beat
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --force-recreate backend worker beat
 ```
 
-如果已经出现 worker 长时间不消费、任务大量积压，先停 beat、清队列、清锁，再重建：
+如果已经出现 Worker 长时间不消费、任务大量积压，先停 Beat 和 Worker，只清理默认检查队列及监控锁，不要清理 `media` 队列：
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod stop beat
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend celery -A app.workers.celery_app purge -f
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend python - <<'PY'
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod stop beat worker
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend python - <<'PY'
 from redis import Redis
 from app.core.config import settings
 
 r = Redis.from_url(settings.redis_url, decode_responses=True)
+print("queued monitor tasks:", r.llen("celery"))
+r.delete("celery")
 keys = list(r.scan_iter("archivelens:monitor:account:*:scheduled"))
 if keys:
     r.delete(*keys)
 print("deleted locks:", len(keys))
 PY
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --force-recreate backend worker media-worker beat
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --force-recreate backend worker media-worker beat
+ps -eo stat= | awk '$1 ~ /^Z/ {n++} END {print "zombie processes:", n+0}'
 ```
+
+微博登录失效时，系统会把微博连接标记为 `expired`，停止继续调度微博账号；重新扫码登录或上传并检测新的 `weibo.json` 后，系统会恢复连接并立即触发一次扫描。
 
 ## 备份建议
 

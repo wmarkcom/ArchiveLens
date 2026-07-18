@@ -52,6 +52,8 @@
             <StatusBadge :tone="health.worker">Worker {{ healthText.worker }}</StatusBadge>
             <StatusBadge :tone="health.beat">Beat {{ healthText.beat }}</StatusBadge>
             <StatusBadge :tone="health.mediaWorker">Media Worker {{ healthText.mediaWorker }}</StatusBadge>
+            <StatusBadge :tone="health.monitorQueue">检查队列 {{ healthText.monitorQueue }}</StatusBadge>
+            <StatusBadge :tone="health.mediaQueue">媒体队列 {{ healthText.mediaQueue }}</StatusBadge>
             <StatusBadge :tone="health.weibo">微博登录 {{ healthText.weibo }}</StatusBadge>
             <StatusBadge :tone="health.xueqiu">雪球登录 {{ healthText.xueqiu }}</StatusBadge>
           </div>
@@ -122,6 +124,8 @@ const health = ref<Record<string, StatusTone>>({
   worker: 'slate',
   beat: 'slate',
   mediaWorker: 'slate',
+  monitorQueue: 'slate',
+  mediaQueue: 'slate',
   weibo: 'slate',
   xueqiu: 'slate',
 })
@@ -133,6 +137,8 @@ const healthText = ref<Record<string, string>>({
   worker: '检测中',
   beat: '检测中',
   mediaWorker: '检测中',
+  monitorQueue: '检测中',
+  mediaQueue: '检测中',
   weibo: '检测中',
   xueqiu: '检测中',
 })
@@ -165,7 +171,7 @@ async function loadDashboard() {
   }
 }
 
-function applyHealth(source: Record<string, string>) {
+function applyHealth(source: Record<string, any>) {
   setHealth('frontend', source.frontend || 'normal')
   setHealth('api', source.api || 'normal')
   setHealth('postgres', source.postgres)
@@ -173,6 +179,8 @@ function applyHealth(source: Record<string, string>) {
   setHealth('worker', source.worker)
   setHealth('beat', source.beat)
   setHealth('mediaWorker', source.media_worker)
+  setQueueHealth('monitorQueue', source.monitor_queue, source.monitor_queue_depth)
+  setQueueHealth('mediaQueue', source.media_queue, source.media_queue_depth)
   setHealth('weibo', source.weibo_login)
   setHealth('xueqiu', source.xueqiu_login)
 }
@@ -181,6 +189,12 @@ function setHealth(key: string, status?: string) {
   const normalized = status || 'warning'
   health.value[key] = healthTone(normalized)
   healthText.value[key] = healthLabel(normalized)
+}
+
+function setQueueHealth(key: string, status?: string, depth?: number) {
+  const normalized = status || 'warning'
+  health.value[key] = healthTone(normalized)
+  healthText.value[key] = depth != null && depth >= 0 ? `${healthLabel(normalized)} · ${depth}` : healthLabel(normalized)
 }
 
 function healthTone(status: string): StatusTone {

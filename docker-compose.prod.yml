@@ -2,6 +2,7 @@ services:
   backend:
     build: ./backend
     container_name: archivelens-prod-backend
+    init: true
     command: sh -c "PYTHONPATH=/app alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     env_file:
       - ${ARCHIVELENS_ENV_FILE:-.env.prod}
@@ -24,7 +25,8 @@ services:
   worker:
     build: ./backend
     container_name: archivelens-prod-worker
-    command: celery -A app.workers.celery_app worker -l info --pool=solo --concurrency=1
+    init: true
+    command: celery -A app.workers.celery_app worker -l info --pool=prefork --concurrency=1 --max-tasks-per-child=20
     env_file:
       - ${ARCHIVELENS_ENV_FILE:-.env.prod}
     extra_hosts:
@@ -41,6 +43,7 @@ services:
   media-worker:
     build: ./backend
     container_name: archivelens-prod-media-worker
+    init: true
     command: celery -A app.workers.celery_app worker -Q media -l info --pool=solo --concurrency=1
     env_file:
       - ${ARCHIVELENS_ENV_FILE:-.env.prod}
@@ -58,6 +61,7 @@ services:
   beat:
     build: ./backend
     container_name: archivelens-prod-beat
+    init: true
     command: celery -A app.workers.celery_app beat -l info --schedule=/app/logs/celerybeat-schedule
     env_file:
       - ${ARCHIVELENS_ENV_FILE:-.env.prod}

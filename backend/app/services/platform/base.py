@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+class PlatformAuthenticationError(RuntimeError):
+    """Raised when a platform rejects the configured login state."""
+
+
 @dataclass(frozen=True)
 class NormalizedPost:
     platform: str

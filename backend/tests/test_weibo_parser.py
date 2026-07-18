@@ -1,8 +1,13 @@
+import asyncio
+
+import app.services.platform.weibo as weibo_module
+from app.services.platform.base import PlatformAuthenticationError
 from app.services.platform.weibo import (
     WeiboCollectOptions,
     WeiboAdapter,
     choose_weibo_full_text,
     clean_weibo_detail_text,
+    collect_weibo_posts,
     extract_weibo_uid,
     has_weibo_auth_cookie,
     image_urls_from_status,
@@ -11,6 +16,7 @@ from app.services.platform.weibo import (
     parse_weibo_datetime,
     parse_weibo_json_body,
     strip_weibo_html,
+    weibo_cookie_header,
 )
 
 
@@ -88,8 +94,7 @@ def test_collect_options_defaults(tmp_path) -> None:
     options = WeiboCollectOptions(storage_state_path=tmp_path / "weibo.json", uid="1642512402")
     assert options.page_no == 1
     assert options.limit == 20
-    assert options.detail_fallback_limit == 3
-    assert options.detail_timeout_ms == 10000
+    assert options.list_timeout_ms == 30000
 
 
 def test_weibo_adapter_detail_candidates(tmp_path) -> None:
@@ -114,6 +119,65 @@ def test_has_weibo_auth_cookie(tmp_path) -> None:
     assert has_weibo_auth_cookie(state_file)
 
 
+def test_weibo_cookie_header_only_includes_weibo_cookies(tmp_path) -> None:
+    state_file = tmp_path / "weibo.json"
+    state_file.write_text(
+        """
+        {
+          "cookies": [
+            {"domain": ".weibo.com", "name": "SUB", "value": "session"},
+            {"domain": "weibo.com", "name": "XSRF-TOKEN", "value": "token"},
+            {"domain": ".example.com", "name": "ignored", "value": "value"}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    assert weibo_cookie_header(state_file) == "SUB=session; XSRF-TOKEN=token"
+
+
+def test_collect_weibo_posts_uses_lightweight_http_without_playwright(tmp_path, monkeypatch) -> None:
+    state_file = tmp_path / "weibo.json"
+    state_file.write_text('{"cookies":[{"domain":".weibo.com","name":"SUB","value":"session"}]}', encoding="utf-8")
+
+    async def fake_fetch_mblog_payload(**kwargs):
+        assert kwargs["storage_state_path"] == state_file
+        assert kwargs["uid"] == "1642512402"
+        return {
+            "data": {
+                "list": [
+                    {
+                        "id": 123,
+                        "mid": "123",
+                        "mblogid": "ABC",
+                        "created_at": "Wed Jun 10 14:36:59 +0800 2026",
+                        "text_raw": "列表正文",
+                        "pics": [{"large": {"url": "https://wx1.sinaimg.cn/mw2000/a.jpg"}}],
+                    }
+                ],
+                "total": 1,
+            }
+        }
+
+    def fail_if_playwright_starts():
+        raise AssertionError("list collection must not start Playwright")
+
+    monkeypatch.setattr(weibo_module, "fetch_mblog_payload", fake_fetch_mblog_payload)
+    monkeypatch.setattr(weibo_module, "async_playwright", fail_if_playwright_starts)
+
+    result = asyncio.run(
+        collect_weibo_posts(
+            WeiboCollectOptions(storage_state_path=state_file, uid="1642512402")
+        )
+    )
+
+    assert [item.platform_post_id for item in result.items] == ["123"]
+    assert result.items[0].full_text == "列表正文"
+    assert result.items[0].image_urls == ["https://wx1.sinaimg.cn/mw2000/a.jpg"]
+    assert result.next_cursor is None
+
+
 def test_extract_weibo_uid_from_profile_urls() -> None:
     assert extract_weibo_uid("1642512402") == "1642512402"
     assert extract_weibo_uid("https://weibo.com/u/1642512402") == "1642512402"
@@ -126,7 +190,30 @@ def test_parse_weibo_json_body_detects_passport_html() -> None:
     body = "<html><head><title>新浪通行证</title></head></html>".encode("gb18030")
     try:
         parse_weibo_json_body(body, "text/html")
-    except RuntimeError as exc:
+    except PlatformAuthenticationError as exc:
         assert "微博登录态已失效" in str(exc)
     else:
-        raise AssertionError("expected RuntimeError")
+        raise AssertionError("expected PlatformAuthenticationError")
+
+
+def test_parse_weibo_json_body_detects_login_json() -> None:
+    body = b'{"ok":0,"message":"Please login before continuing"}'
+    try:
+        parse_weibo_json_body(body, "application/json")
+    except PlatformAuthenticationError as exc:
+        assert "Please login" in str(exc)
+    else:
+        raise AssertionError("expected PlatformAuthenticationError")
+
+
+def test_parse_weibo_json_body_detects_ok_minus_100_login_redirect() -> None:
+    body = (
+        b'{"ok":-100,'
+        b'"url":"https://weibo.com/login.php?url=https%3A%2F%2Fweibo.com%2Fu%2F3508700764"}'
+    )
+    try:
+        parse_weibo_json_body(body, "application/json")
+    except PlatformAuthenticationError as exc:
+        assert "微博登录态已失效" in str(exc)
+    else:
+        raise AssertionError("expected PlatformAuthenticationError")

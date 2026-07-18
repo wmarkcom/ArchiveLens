@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.models import MediaAsset, PlatformAccount, PlatformConnection, Post, PostSnapshot
 from app.services.hashing import compute_content_hash
 from app.services.media_queue import enqueue_pending_media_for_post_ids
-from app.services.platform.base import NormalizedPost
+from app.services.platform.base import NormalizedPost, PlatformAuthenticationError
 from app.services.platform.registry import get_platform_adapter, resolve_platform_account_id
 
 logger = logging.getLogger(__name__)
@@ -137,10 +137,20 @@ class MonitorService:
                 "edited_posts": edited_count,
                 "queued_media_tasks": queued_media_tasks,
             }
+        except PlatformAuthenticationError as exc:
+            logger.warning("Platform login expired while checking account %s: %s", account_id, exc)
+            connection.status = "expired"
+            connection.error_message = str(exc)[:500]
+            account.status = "failed"
+            account.error_message = str(exc)[:500]
+            account.last_checked_at = datetime.now(timezone.utc)
+            self._db.commit()
+            return {"account_id": account_id, "status": "failed", "error": str(exc), "auth_expired": True}
         except Exception as exc:
             logger.exception("Monitor check failed for account %s", account_id)
             account.status = "failed"
             account.error_message = str(exc)[:500]
+            account.last_checked_at = datetime.now(timezone.utc)
             self._db.commit()
             return {"account_id": account_id, "status": "failed", "error": str(exc)}
 

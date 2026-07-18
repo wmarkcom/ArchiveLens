@@ -14,6 +14,8 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="Asia/Shanghai",
     enable_utc=True,
+    task_track_started=True,
+    worker_prefetch_multiplier=1,
     imports=[
         "app.workers.health_tasks",
         "app.workers.monitor_tasks",
@@ -24,6 +26,7 @@ celery_app.conf.update(
         "monitor.scan_due_accounts": {
             "task": "monitor.scan_due_accounts",
             "schedule": settings.monitor_scan_interval,
+            "options": {"expires": max(settings.monitor_scan_interval * 2, 60)},
         },
     },
     task_routes={

@@ -16,6 +16,10 @@ class HealthStatus(BaseModel):
     worker: str = "normal"
     beat: str = "normal"
     media_worker: str = "normal"
+    monitor_queue: str = "normal"
+    monitor_queue_depth: int = 0
+    media_queue: str = "normal"
+    media_queue_depth: int = 0
     weibo_login: str = "normal"
     xueqiu_login: str = "warning"
 

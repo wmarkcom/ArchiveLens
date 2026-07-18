@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -10,13 +13,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import aiohttp
 from playwright.async_api import BrowserContext, Page, async_playwright
 
-from app.services.platform.base import NormalizedPost, PageResult, PlatformAdapter
+from app.services.platform.base import NormalizedPost, PageResult, PlatformAdapter, PlatformAuthenticationError
 
 
 WEIBO_BASE_URL = "https://weibo.com"
 WEIBO_MBLOG_ENDPOINT = f"{WEIBO_BASE_URL}/ajax/statuses/mymblog"
+logger = logging.getLogger(__name__)
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Apple Silicon Mac OS X 15_0) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -29,9 +34,7 @@ class WeiboCollectOptions:
     uid: str
     page_no: int = 1
     limit: int = 20
-    headless: bool = True
-    detail_fallback_limit: int = 3
-    detail_timeout_ms: int = 10000
+    list_timeout_ms: int = 30000
     user_agent: str = DEFAULT_USER_AGENT
 
 
@@ -227,12 +230,36 @@ def has_weibo_auth_cookie(storage_state_path: str | Path) -> bool:
     return any(cookie.get("domain", "").endswith("weibo.com") and cookie.get("name") == "SUB" for cookie in cookies)
 
 
+def weibo_cookie_header(storage_state_path: str | Path) -> str:
+    path = Path(storage_state_path)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PlatformAuthenticationError("微博登录态文件不存在或无法解析，请在平台连接页重新登录") from exc
+
+    cookies = state.get("cookies") or []
+    pairs: list[str] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        domain = str(cookie.get("domain") or "").lower()
+        name = str(cookie.get("name") or "")
+        value = str(cookie.get("value") or "")
+        if domain.endswith("weibo.com") and name:
+            pairs.append(f"{name}={value}")
+    if not any(pair.startswith("SUB=") for pair in pairs):
+        raise PlatformAuthenticationError("微博登录态缺少 SUB cookie，请在平台连接页重新登录")
+    return "; ".join(pairs)
+
+
 def parse_weibo_json_body(body: bytes, content_type: str | None = None) -> dict[str, Any]:
     text = decode_weibo_response_body(body, content_type)
     stripped = text.lstrip()
     if stripped.startswith("<"):
         if "新浪通行证" in text or "passport.weibo.com" in text or "login" in text.lower():
-            raise RuntimeError("微博登录态已失效或需要新浪通行证验证，请在平台连接页重新上传/刷新 weibo.json")
+            raise PlatformAuthenticationError(
+                "微博登录态已失效或需要新浪通行证验证，请在平台连接页重新上传/刷新 weibo.json"
+            )
         raise RuntimeError("Weibo mymblog response is HTML, not JSON")
     try:
         payload = json.loads(text)
@@ -240,7 +267,25 @@ def parse_weibo_json_body(body: bytes, content_type: str | None = None) -> dict[
         raise RuntimeError(f"Weibo mymblog response is not valid JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("Weibo mymblog response is not a JSON object")
+    validate_weibo_payload(payload)
     return payload
+
+
+def validate_weibo_payload(payload: dict[str, Any]) -> None:
+    redirect_url = str(payload.get("url") or "")
+    if "weibo.com/login" in redirect_url.lower() or "passport.weibo.com" in redirect_url.lower():
+        raise PlatformAuthenticationError("微博登录态已失效，采集接口返回登录页，请在平台连接页重新登录")
+
+    ok = payload.get("ok")
+    if ok not in (0, False, -100):
+        return
+
+    message = str(payload.get("message") or payload.get("msg") or "微博接口拒绝请求")
+    lowered = message.lower()
+    auth_markers = ("登录", "验证", "账号异常", "passport", "login", "unauthorized")
+    if ok == -100 or any(marker in lowered for marker in auth_markers):
+        raise PlatformAuthenticationError(f"微博登录态已失效或需要验证：{message}")
+    raise RuntimeError(f"Weibo mymblog request rejected: {message}")
 
 
 def decode_weibo_response_body(body: bytes, content_type: str | None = None) -> str:
@@ -261,53 +306,53 @@ def decode_weibo_response_body(body: bytes, content_type: str | None = None) -> 
 
 
 async def collect_weibo_posts(options: WeiboCollectOptions) -> PageResult:
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=options.headless)
-        context = await browser.new_context(
-            storage_state=str(options.storage_state_path),
-            user_agent=options.user_agent,
-            extra_http_headers={"Referer": f"{WEIBO_BASE_URL}/u/{options.uid}"},
-        )
-        try:
-            payload = await fetch_mblog_payload(context, options.uid, options.page_no)
-            statuses = extract_status_items(payload)[: options.limit]
-            items: list[NormalizedPost] = []
-            detail_count = 0
-
-            for index, status in enumerate(statuses):
-                detail_text = None
-                if is_truncated_status(status) and detail_count < options.detail_fallback_limit:
-                    detail_text = await fetch_detail_text(
-                        context,
-                        weibo_detail_url(options.uid, status),
-                        timeout_ms=options.detail_timeout_ms,
-                    )
-                    detail_count += 1
-                items.append(normalize_weibo_status(options.uid, status, full_text=detail_text))
-
-            return PageResult(
-                items=items,
-                next_cursor=next_page_from_payload(payload, options.page_no, len(statuses)),
-            )
-        finally:
-            await context.close()
-            await browser.close()
+    payload = await fetch_mblog_payload(
+        storage_state_path=options.storage_state_path,
+        uid=options.uid,
+        page_no=options.page_no,
+        timeout_ms=options.list_timeout_ms,
+        user_agent=options.user_agent,
+    )
+    statuses = extract_status_items(payload)[: options.limit]
+    items = [normalize_weibo_status(options.uid, status) for status in statuses]
+    return PageResult(
+        items=items,
+        next_cursor=next_page_from_payload(payload, options.page_no, len(statuses)),
+    )
 
 
 async def fetch_mblog_payload(
-    context: BrowserContext,
+    *,
+    storage_state_path: str | Path,
     uid: str,
     page_no: int,
+    timeout_ms: int = 30000,
+    user_agent: str = DEFAULT_USER_AGENT,
 ) -> dict[str, Any]:
-    response = await context.request.get(
-        WEIBO_MBLOG_ENDPOINT,
-        params={"uid": uid, "page": str(page_no), "feature": "0"},
-        timeout=60000,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Weibo mymblog request failed: HTTP {response.status}")
-    body = await response.body()
-    return parse_weibo_json_body(body, response.headers.get("content-type"))
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Cookie": weibo_cookie_header(storage_state_path),
+        "Referer": f"{WEIBO_BASE_URL}/u/{uid}",
+        "User-Agent": user_agent,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    timeout = aiohttp.ClientTimeout(total=max(timeout_ms, 1000) / 1000)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+        async with session.get(
+            WEIBO_MBLOG_ENDPOINT,
+            params={"uid": uid, "page": str(page_no), "feature": "0"},
+        ) as response:
+            body = await response.read()
+            final_url = str(response.url).lower()
+            if "passport.weibo.com" in final_url or "/login" in final_url:
+                raise PlatformAuthenticationError("微博采集接口跳转到登录页，请在平台连接页重新登录")
+            if response.status in {401, 403}:
+                raise PlatformAuthenticationError(
+                    f"微博登录态已失效，采集接口返回 HTTP {response.status}，请在平台连接页重新登录"
+                )
+            if response.status >= 400:
+                raise RuntimeError(f"Weibo mymblog request failed: HTTP {response.status}")
+            return parse_weibo_json_body(body, response.headers.get("content-type"))
 
 
 async def fetch_detail_text(context: BrowserContext, url: str, *, timeout_ms: int = 10000) -> str | None:
@@ -321,7 +366,7 @@ async def fetch_detail_text(context: BrowserContext, url: str, *, timeout_ms: in
     except Exception:
         return None
     finally:
-        await page.close()
+        await _close_playwright_resource(page, "page")
 
 
 async def click_expand(page: Page) -> None:
@@ -367,30 +412,29 @@ class WeiboAdapter(PlatformAdapter):
         storage_state_path: str | Path,
         *,
         headless: bool = True,
-        detail_fallback_limit: int = 3,
         detail_timeout_ms: int = 10000,
+        list_timeout_ms: int = 30000,
     ) -> None:
         self.storage_state_path = Path(storage_state_path)
         self.headless = headless
-        self.detail_fallback_limit = detail_fallback_limit
         self.detail_timeout_ms = detail_timeout_ms
+        self.list_timeout_ms = list_timeout_ms
 
     async def check_login(self) -> bool:
         if not self.storage_state_path.exists():
             return False
         if not has_weibo_auth_cookie(self.storage_state_path):
             return False
-        async with async_playwright() as p:
-            request = await p.request.new_context(
-                storage_state=str(self.storage_state_path),
-                user_agent=DEFAULT_USER_AGENT,
-                extra_http_headers={"Referer": WEIBO_BASE_URL},
+        try:
+            await fetch_mblog_payload(
+                storage_state_path=self.storage_state_path,
+                uid="1002568141",
+                page_no=1,
+                timeout_ms=self.list_timeout_ms,
             )
-            try:
-                response = await request.get(f"{WEIBO_BASE_URL}/ajax/feed/allGroups", timeout=30000)
-                return response.ok
-            finally:
-                await request.dispose()
+        except PlatformAuthenticationError:
+            return False
+        return True
 
     async def fetch_recent_posts(self, account_id: str, limit: int = 20) -> PageResult:
         return await self.fetch_history_page(account_id=account_id, cursor="1", limit=limit)
@@ -408,9 +452,7 @@ class WeiboAdapter(PlatformAdapter):
                 uid=account_id,
                 page_no=page_no,
                 limit=limit,
-                headless=self.headless,
-                detail_fallback_limit=0,
-                detail_timeout_ms=self.detail_timeout_ms,
+                list_timeout_ms=self.list_timeout_ms,
             )
         )
 
@@ -448,7 +490,14 @@ class WeiboAdapter(PlatformAdapter):
                     if full_text != (post.full_text or ""):
                         enriched_by_id[post.platform_post_id] = replace(post, full_text=full_text)
             finally:
-                await context.close()
-                await browser.close()
+                await _close_playwright_resource(context, "context")
+                await _close_playwright_resource(browser, "browser")
 
         return [enriched_by_id.get(post.platform_post_id, post) for post in posts]
+
+
+async def _close_playwright_resource(resource: Any, resource_name: str, timeout_seconds: float = 5.0) -> None:
+    with suppress(Exception):
+        await asyncio.wait_for(resource.close(), timeout=timeout_seconds)
+        return
+    logger.warning("Timed out or failed while closing Playwright %s", resource_name)

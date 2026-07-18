@@ -60,6 +60,20 @@ def scan_due_accounts() -> dict:
     skipped_disconnected = 0
 
     try:
+        monitor_queue_depth = int(redis_client.llen("celery"))
+        if monitor_queue_depth >= settings.monitor_queue_critical_threshold:
+            result = {
+                "status": "warning",
+                "scanned": 0,
+                "enqueued": 0,
+                "skipped_locked": 0,
+                "skipped_disconnected": 0,
+                "queue_depth": monitor_queue_depth,
+                "warning": "monitor queue backlog is above the critical threshold",
+            }
+            finish_worker_run(db, run_log, status="success", result=result)
+            return result
+
         connected_platforms = {
             row[0]
             for row in db.query(PlatformConnection.platform)
@@ -97,6 +111,7 @@ def scan_due_accounts() -> dict:
             "enqueued": enqueued,
             "skipped_locked": skipped_locked,
             "skipped_disconnected": skipped_disconnected,
+            "queue_depth": monitor_queue_depth,
         }
         finish_worker_run(db, run_log, status="success", result=result)
         return result

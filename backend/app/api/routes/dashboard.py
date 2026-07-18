@@ -15,7 +15,13 @@ from app.schemas.dashboard import DashboardSummary, HealthStatus
 from app.schemas.notifications import NotificationEventOut
 from app.schemas.posts import PostListItem
 from app.services.media_urls import media_asset_preview_url
-from app.services.system_health import check_celery_beat, check_celery_workers, check_redis
+from app.services.system_health import (
+    check_celery_beat,
+    check_celery_queues,
+    check_celery_workers,
+    check_monitor_worker,
+    check_redis,
+)
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -73,7 +79,9 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     ]
 
     # Health checks
-    worker_status, media_worker_status = check_celery_workers()
+    celery_worker_status, media_worker_status = check_celery_workers()
+    worker_status = check_monitor_worker(db, celery_worker_status)
+    monitor_queue_status, monitor_queue_depth, media_queue_status, media_queue_depth = check_celery_queues()
     weibo_conn = db.query(PlatformConnection).filter(PlatformConnection.platform == "weibo").first()
     weibo_login = "normal"
     if weibo_conn and weibo_conn.status == "expired":
@@ -89,6 +97,10 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
         worker=worker_status,
         beat=check_celery_beat(db),
         media_worker=media_worker_status,
+        monitor_queue=monitor_queue_status,
+        monitor_queue_depth=monitor_queue_depth,
+        media_queue=media_queue_status,
+        media_queue_depth=media_queue_depth,
         weibo_login=weibo_login,
         xueqiu_login=xueqiu_login,
     )

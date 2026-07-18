@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -14,11 +15,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import PlatformConnection, PlatformLoginSession
+from app.services.monitor_trigger import enqueue_monitor_scan
 from app.services.platform.weibo import WEIBO_MBLOG_ENDPOINT, parse_weibo_json_body
 
 
 LOGIN_TTL_MINUTES = 10
 WEIBO_LOGIN_URL = "https://weibo.com/login.php"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +36,7 @@ class BrowserLoginRuntime:
 
 
 _active_sessions: dict[str, BrowserLoginRuntime] = {}
+_expiry_tasks: dict[str, asyncio.Task[None]] = {}
 _session_lock = asyncio.Lock()
 
 
@@ -45,6 +49,8 @@ async def start_browser_login(db: Session, session: PlatformLoginSession) -> Non
     screenshot_path.parent.mkdir(parents=True, exist_ok=True)
 
     playwright = await async_playwright().start()
+    browser: Browser | None = None
+    context: BrowserContext | None = None
     try:
         browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -60,7 +66,11 @@ async def start_browser_login(db: Session, session: PlatformLoginSession) -> Non
         await click_weibo_login_entry(page)
         await page.screenshot(path=str(screenshot_path), full_page=True)
     except Exception:
-        await playwright.stop()
+        if context is not None:
+            await _close_with_timeout(context.close(), "login context")
+        if browser is not None:
+            await _close_with_timeout(browser.close(), "login browser")
+        await _close_with_timeout(playwright.stop(), "Playwright")
         raise
 
     runtime = BrowserLoginRuntime(
@@ -74,7 +84,11 @@ async def start_browser_login(db: Session, session: PlatformLoginSession) -> Non
     )
     async with _session_lock:
         old_runtime = _active_sessions.pop(session.id, None)
+        old_expiry_task = _expiry_tasks.pop(session.id, None)
         _active_sessions[session.id] = runtime
+        _expiry_tasks[session.id] = asyncio.create_task(_expire_browser_login(session.id, expires_at))
+    if old_expiry_task is not None:
+        old_expiry_task.cancel()
     if old_runtime is not None:
         await close_runtime(old_runtime)
 
@@ -145,6 +159,7 @@ async def refresh_browser_login(db: Session, session: PlatformLoginSession) -> P
             "message": "扫码登录成功，登录态已保存",
         }
         db.commit()
+        enqueue_monitor_scan()
         await cleanup_browser_login(session.id)
         return session
 
@@ -202,18 +217,31 @@ async def click_browser_login_action(
 async def cleanup_browser_login(session_id: str) -> None:
     async with _session_lock:
         runtime = _active_sessions.pop(session_id, None)
+        expiry_task = _expiry_tasks.pop(session_id, None)
+    current_task = asyncio.current_task()
+    if expiry_task is not None and expiry_task is not current_task:
+        expiry_task.cancel()
     if runtime is not None:
         await close_runtime(runtime)
 
 
 async def close_runtime(runtime: BrowserLoginRuntime) -> None:
+    await _close_with_timeout(runtime.context.close(), "login context")
+    await _close_with_timeout(runtime.browser.close(), "login browser")
+    await _close_with_timeout(runtime.playwright.stop(), "Playwright")
+
+
+async def _expire_browser_login(session_id: str, expires_at: datetime) -> None:
+    delay = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
+    await asyncio.sleep(delay)
+    await cleanup_browser_login(session_id)
+
+
+async def _close_with_timeout(awaitable: Any, resource_name: str, timeout_seconds: float = 5.0) -> None:
     try:
-        await runtime.context.close()
-    finally:
-        try:
-            await runtime.browser.close()
-        finally:
-            await runtime.playwright.stop()
+        await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except Exception:
+        logger.warning("Timed out or failed while closing %s", resource_name)
 
 
 async def click_weibo_login_entry(page: Page) -> None:

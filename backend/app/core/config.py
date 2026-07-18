@@ -32,9 +32,14 @@ class Settings:
     auth_root: str = os.getenv("AUTH_ROOT", default_auth_root(media_root))
     weibo_detail_fallback_limit: int = int(os.getenv("WEIBO_DETAIL_FALLBACK_LIMIT", "3"))
     weibo_detail_timeout_ms: int = int(os.getenv("WEIBO_DETAIL_TIMEOUT_MS", "10000"))
+    weibo_list_timeout_ms: int = int(os.getenv("WEIBO_LIST_TIMEOUT_MS", "30000"))
     monitor_scan_interval: int = int(os.getenv("MONITOR_SCAN_INTERVAL", "30"))
     monitor_check_soft_time_limit: int = int(os.getenv("MONITOR_CHECK_SOFT_TIME_LIMIT", "180"))
     monitor_check_time_limit: int = int(os.getenv("MONITOR_CHECK_TIME_LIMIT", "240"))
+    monitor_queue_warning_threshold: int = int(os.getenv("MONITOR_QUEUE_WARNING_THRESHOLD", "100"))
+    monitor_queue_critical_threshold: int = int(os.getenv("MONITOR_QUEUE_CRITICAL_THRESHOLD", "500"))
+    media_queue_warning_threshold: int = int(os.getenv("MEDIA_QUEUE_WARNING_THRESHOLD", "500"))
+    media_queue_critical_threshold: int = int(os.getenv("MEDIA_QUEUE_CRITICAL_THRESHOLD", "2000"))
     session_secret_key: str = os.getenv("SESSION_SECRET_KEY", "change-me")
 
     @cached_property

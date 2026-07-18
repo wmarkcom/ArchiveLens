@@ -21,6 +21,7 @@ from app.services.browser_login import (
     refresh_browser_login,
     start_browser_login,
 )
+from app.services.monitor_trigger import enqueue_monitor_scan
 from app.services.platform.registry import get_platform_adapter
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
@@ -213,4 +214,6 @@ def refresh_connection(platform: str, db: Session = Depends(get_db)) -> Platform
 
     db.commit()
     db.refresh(conn)
+    if conn.status == "connected":
+        enqueue_monitor_scan()
     return _connection_out(conn)
