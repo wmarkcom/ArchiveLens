@@ -54,6 +54,18 @@ def test_normalize_weibo_status() -> None:
     assert post.original_url == "https://weibo.com/1642512402/ABC"
     assert post.full_text == "正文"
     assert post.source == "微博网页版"
+    assert post.raw_data["_archivelens"]["text_suspected_truncated"] is False
+    assert post.raw_data["_archivelens"]["detail_enrich_status"] == "not_required"
+
+
+def test_normalize_weibo_status_marks_suspected_truncated() -> None:
+    post = normalize_weibo_status(
+        "1642512402",
+        {"id": 123, "mid": "456", "mblogid": "ABC", "text": '正文...<span class="expand">展开</span>'},
+    )
+
+    assert post.raw_data["_archivelens"]["text_suspected_truncated"] is True
+    assert post.raw_data["_archivelens"]["detail_enrich_status"] == "pending"
 
 
 def test_choose_weibo_full_text_prefers_longer_detail() -> None:
@@ -108,6 +120,98 @@ def test_weibo_adapter_detail_candidates(tmp_path) -> None:
     assert adapter.should_fetch_detail_for_monitor(normal_post, is_new=True)
     assert not adapter.should_fetch_detail_for_monitor(normal_post, is_new=False)
     assert adapter.should_fetch_detail_for_monitor(truncated_post, is_new=False)
+
+
+def test_weibo_adapter_records_detail_enrichment_success(tmp_path, monkeypatch) -> None:
+    adapter = WeiboAdapter(tmp_path / "weibo.json")
+    post = normalize_weibo_status(
+        "1642512402",
+        {"id": 2, "mid": "2", "mblogid": "B", "text": '短正文...<span class="expand">展开</span>'},
+    )
+
+    async def fake_fetch_detail_text(*args, **kwargs):
+        return "短正文，详情页补全后的完整正文"
+
+    class FakePage:
+        async def close(self):
+            return None
+
+    class FakeContext:
+        async def close(self):
+            return None
+
+    class FakeBrowser:
+        async def new_context(self, **kwargs):
+            return FakeContext()
+
+        async def close(self):
+            return None
+
+    class FakeChromium:
+        async def launch(self, **kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    monkeypatch.setattr(weibo_module, "fetch_detail_text", fake_fetch_detail_text)
+    monkeypatch.setattr(weibo_module, "async_playwright", lambda: FakePlaywright())
+
+    result = asyncio.run(adapter.enrich_posts_with_details("1642512402", [post], max_count=1))
+
+    assert result[0].full_text == "短正文，详情页补全后的完整正文"
+    assert result[0].raw_data["_archivelens"]["detail_enriched"] is True
+    assert result[0].raw_data["_archivelens"]["detail_enrich_status"] == "success"
+
+
+def test_weibo_adapter_records_detail_enrichment_failure(tmp_path, monkeypatch) -> None:
+    adapter = WeiboAdapter(tmp_path / "weibo.json")
+    post = normalize_weibo_status(
+        "1642512402",
+        {"id": 2, "mid": "2", "mblogid": "B", "text": '短正文...<span class="expand">展开</span>'},
+    )
+
+    async def fake_fetch_detail_text(*args, **kwargs):
+        return None
+
+    class FakeContext:
+        async def close(self):
+            return None
+
+    class FakeBrowser:
+        async def new_context(self, **kwargs):
+            return FakeContext()
+
+        async def close(self):
+            return None
+
+    class FakeChromium:
+        async def launch(self, **kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    monkeypatch.setattr(weibo_module, "fetch_detail_text", fake_fetch_detail_text)
+    monkeypatch.setattr(weibo_module, "async_playwright", lambda: FakePlaywright())
+
+    result = asyncio.run(adapter.enrich_posts_with_details("1642512402", [post], max_count=1))
+
+    assert result[0].full_text == post.full_text
+    assert result[0].raw_data["_archivelens"]["detail_enriched"] is False
+    assert result[0].raw_data["_archivelens"]["detail_enrich_status"] == "failed"
 
 
 def test_has_weibo_auth_cookie(tmp_path) -> None:

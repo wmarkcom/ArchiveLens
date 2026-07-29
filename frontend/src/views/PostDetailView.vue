@@ -71,6 +71,22 @@
               <StatusBadge :tone="statusTone(post.status)">{{ statusLabel(post.status) }}</StatusBadge>
             </div>
             <div class="settings-row">
+              <span>正文完整性</span>
+              <StatusBadge :tone="textQualityTone(post)">
+                {{ textQualityLabel(post) }}
+              </StatusBadge>
+            </div>
+            <div class="settings-row">
+              <span>详情补全</span>
+              <StatusBadge :tone="detailStatusTone(post.detail_enrich_status)">
+                {{ detailStatusLabel(post.detail_enrich_status) }}
+              </StatusBadge>
+            </div>
+            <div v-if="post.detail_enrich_error" class="settings-row">
+              <span>补全说明</span>
+              <strong style="color:#d97706">{{ post.detail_enrich_error }}</strong>
+            </div>
+            <div class="settings-row">
               <span>编辑次数</span>
               <strong>{{ post.edit_count || 0 }}</strong>
             </div>
@@ -111,6 +127,7 @@ import { useRoute } from 'vue-router'
 import PanelCard from '../components/PanelCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { apiGet } from '../composables/useApi'
+import type { StatusTone } from '../data/mock'
 import { platformName, statusLabel, statusTone } from '../utils/status'
 
 interface PostDetail {
@@ -132,6 +149,10 @@ interface PostDetail {
   is_edited: boolean
   edit_count: number
   status: string
+  text_suspected_truncated: boolean
+  detail_enriched: boolean
+  detail_enrich_status: string
+  detail_enrich_error: string | null
   last_collected_at: string
 }
 
@@ -182,6 +203,40 @@ function formatSize(bytes: number | null): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function textQualityTone(item: PostDetail): StatusTone {
+  if (item.detail_enriched) return 'green'
+  if (item.text_suspected_truncated) return 'yellow'
+  if (item.detail_enrich_status === 'failed') return 'red'
+  return 'green'
+}
+
+function textQualityLabel(item: PostDetail): string {
+  if (item.detail_enriched) return '已详情补全'
+  if (item.text_suspected_truncated) return '疑似截断'
+  if (item.detail_enrich_status === 'failed') return '补全失败'
+  return '未发现截断'
+}
+
+function detailStatusTone(status: string): StatusTone {
+  if (status === 'success') return 'green'
+  if (status === 'failed') return 'red'
+  if (status === 'pending' || status === 'skipped_limit') return 'yellow'
+  return 'slate'
+}
+
+function detailStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    success: '成功',
+    failed: '失败',
+    not_longer: '详情不更长',
+    not_required: '无需补全',
+    pending: '待补全',
+    skipped_limit: '超出本轮上限',
+    unknown: '未知',
+  }
+  return labels[status] || status || '未知'
 }
 
 onMounted(loadDetail)

@@ -107,6 +107,14 @@ def is_truncated_status(item: dict[str, Any]) -> bool:
     return "class=\"expand\"" in text or "...展开" in text or text_raw.endswith("​​​")
 
 
+def with_text_quality_meta(item: dict[str, Any], **updates: Any) -> dict[str, Any]:
+    raw_data = dict(item)
+    meta = dict(raw_data.get("_archivelens") or {})
+    meta.update(updates)
+    raw_data["_archivelens"] = meta
+    return raw_data
+
+
 def weibo_detail_url(uid: str, item: dict[str, Any]) -> str:
     bid = item.get("mblogid") or item.get("bid") or item.get("mid") or item.get("id")
     return f"{WEIBO_BASE_URL}/{uid}/{bid}"
@@ -205,6 +213,14 @@ def normalize_weibo_status(uid: str, item: dict[str, Any], full_text: str | None
     platform_post_id = str(item.get("mid") or item.get("id"))
     original_url = weibo_detail_url(uid, item)
     raw_text = choose_weibo_full_text(item, full_text)
+    suspected_truncated = is_truncated_status(item)
+    raw_data = with_text_quality_meta(
+        item,
+        text_suspected_truncated=suspected_truncated,
+        detail_enriched=False,
+        detail_enrich_status="pending" if suspected_truncated else "not_required",
+        detail_enrich_error=None,
+    )
 
     return NormalizedPost(
         platform="weibo",
@@ -216,7 +232,7 @@ def normalize_weibo_status(uid: str, item: dict[str, Any], full_text: str | None
         video_cover_urls=video_cover_urls_from_status(item),
         source=item.get("source"),
         is_edited=bool(item.get("edit_count") or "已编辑" in str(item.get("text") or "")),
-        raw_data=item,
+        raw_data=raw_data,
     )
 
 
@@ -471,6 +487,15 @@ class WeiboAdapter(PlatformAdapter):
 
         candidates = posts[:max_count]
         enriched_by_id: dict[str, NormalizedPost] = {}
+        for post in posts[max_count:]:
+            enriched_by_id[post.platform_post_id] = replace(
+                post,
+                raw_data=with_text_quality_meta(
+                    post.raw_data,
+                    detail_enrich_status="skipped_limit",
+                    detail_enrich_error=f"超过本轮详情补全上限 {max_count}",
+                ),
+            )
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
@@ -487,8 +512,37 @@ class WeiboAdapter(PlatformAdapter):
                         timeout_ms=self.detail_timeout_ms,
                     )
                     full_text = choose_weibo_full_text(post.raw_data, detail_text)
+                    if not detail_text:
+                        enriched_by_id[post.platform_post_id] = replace(
+                            post,
+                            raw_data=with_text_quality_meta(
+                                post.raw_data,
+                                detail_enrich_status="failed",
+                                detail_enrich_error="详情页未提取到正文，已保留列表文本",
+                            ),
+                        )
+                        continue
                     if full_text != (post.full_text or ""):
-                        enriched_by_id[post.platform_post_id] = replace(post, full_text=full_text)
+                        enriched_by_id[post.platform_post_id] = replace(
+                            post,
+                            full_text=full_text,
+                            raw_data=with_text_quality_meta(
+                                post.raw_data,
+                                detail_enriched=True,
+                                detail_enrich_status="success",
+                                detail_enrich_error=None,
+                            ),
+                        )
+                    else:
+                        enriched_by_id[post.platform_post_id] = replace(
+                            post,
+                            raw_data=with_text_quality_meta(
+                                post.raw_data,
+                                detail_enriched=False,
+                                detail_enrich_status="not_longer",
+                                detail_enrich_error="详情页文本不长于列表文本，已保留列表文本",
+                            ),
+                        )
             finally:
                 await _close_playwright_resource(context, "context")
                 await _close_playwright_resource(browser, "browser")

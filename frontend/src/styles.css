@@ -743,6 +743,18 @@ a {
   align-items: center;
 }
 
+.post-quality-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.post-quality-row .badge {
+  min-height: 22px;
+  padding: 0 8px;
+}
+
 .post-thumb {
   width: 56px;
   height: 56px;

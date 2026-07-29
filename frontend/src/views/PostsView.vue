@@ -57,7 +57,14 @@
               <td>
                 <div class="post-summary-cell">
                   <img v-if="post.cover_url" class="post-thumb" :src="post.cover_url" alt="首图缩略图" loading="lazy" />
-                  <div class="truncate">{{ post.full_text || post.title || '(无文字内容)' }}</div>
+                  <div style="min-width:0">
+                    <div class="truncate">{{ post.full_text || post.title || '(无文字内容)' }}</div>
+                    <div class="post-quality-row">
+                      <StatusBadge v-if="post.text_suspected_truncated" tone="yellow">疑似截断</StatusBadge>
+                      <StatusBadge v-if="post.detail_enriched" tone="green">已补全</StatusBadge>
+                      <StatusBadge v-else-if="post.detail_enrich_status === 'failed'" tone="red">补全失败</StatusBadge>
+                    </div>
+                  </div>
                 </div>
               </td>
               <td><StatusBadge :tone="statusTone(post.status)">{{ statusLabel(post.status) }}</StatusBadge></td>
@@ -91,6 +98,10 @@ interface PostItem {
   full_text: string | null
   title: string | null
   cover_url: string | null
+  text_suspected_truncated: boolean
+  detail_enriched: boolean
+  detail_enrich_status: string
+  detail_enrich_error: string | null
   status: string
   last_collected_at: string
 }

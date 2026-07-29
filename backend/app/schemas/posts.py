@@ -23,6 +23,10 @@ class PostListItem(BaseModel):
     edit_count: int = 0
     media_count: int = 0
     cover_url: str | None = None
+    text_suspected_truncated: bool = False
+    detail_enriched: bool = False
+    detail_enrich_status: str = "unknown"
+    detail_enrich_error: str | None = None
     last_collected_at: datetime
 
     model_config = {"from_attributes": True}
@@ -49,6 +53,10 @@ class PostDetail(BaseModel):
     status: str = "normal"
     error_message: str | None = None
     missing_count: int = 0
+    text_suspected_truncated: bool = False
+    detail_enriched: bool = False
+    detail_enrich_status: str = "unknown"
+    detail_enrich_error: str | None = None
     last_collected_at: datetime
     created_at: datetime
     updated_at: datetime

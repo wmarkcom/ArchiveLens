@@ -12,6 +12,19 @@ from app.services.media_urls import media_asset_preview_url, media_asset_to_out
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 
+def _text_quality_meta(post: Post) -> dict:
+    raw_data = post.raw_data if isinstance(post.raw_data, dict) else {}
+    meta = raw_data.get("_archivelens") if isinstance(raw_data, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        "text_suspected_truncated": bool(meta.get("text_suspected_truncated")),
+        "detail_enriched": bool(meta.get("detail_enriched")),
+        "detail_enrich_status": str(meta.get("detail_enrich_status") or "unknown"),
+        "detail_enrich_error": meta.get("detail_enrich_error"),
+    }
+
+
 def _post_to_list_item(post: Post, account_name: str, cover_asset: MediaAsset | None = None) -> PostListItem:
     return PostListItem(
         id=post.id,
@@ -27,6 +40,7 @@ def _post_to_list_item(post: Post, account_name: str, cover_asset: MediaAsset | 
         edit_count=post.edit_count,
         media_count=len(post.image_urls or []) + len(post.video_cover_urls or []),
         cover_url=media_asset_preview_url(cover_asset),
+        **_text_quality_meta(post),
         last_collected_at=post.last_collected_at,
     )
 
@@ -122,6 +136,7 @@ def get_post(post_id: int, db: Session = Depends(get_db)) -> PostDetail:
         status=post.status,
         error_message=post.error_message,
         missing_count=post.missing_count,
+        **_text_quality_meta(post),
         last_collected_at=post.last_collected_at,
         created_at=post.created_at,
         updated_at=post.updated_at,
