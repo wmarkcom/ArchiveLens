@@ -42,7 +42,11 @@
                 </thead>
                 <tbody>
                   <tr v-for="sn in snapshots" :key="sn.id">
-                    <td><strong>v{{ sn.version }}</strong></td>
+                    <td>
+                      <button class="snapshot-version-btn" type="button" @click="openSnapshot(sn)">
+                        v{{ sn.version }}
+                      </button>
+                    </td>
                     <td class="truncate">{{ (sn.full_text || '').substring(0, 120) }}</td>
                     <td>{{ sn.captured_at ? fmtTime(sn.captured_at) : '-' }}</td>
                   </tr>
@@ -116,6 +120,53 @@
           </PanelCard>
         </div>
       </div>
+
+      <div v-if="selectedSnapshot" class="modal-backdrop" @click.self="closeSnapshot">
+        <div class="modal snapshot-modal">
+          <PanelCard :title="`历史快照 v${selectedSnapshot.version}`" subtitle="该版本保存时的完整正文">
+            <div class="snapshot-meta-grid">
+              <div>
+                <span>采集时间</span>
+                <strong>{{ selectedSnapshot.captured_at ? fmtTime(selectedSnapshot.captured_at) : '-' }}</strong>
+              </div>
+              <div>
+                <span>发布时间</span>
+                <strong>{{ selectedSnapshot.published_at ? fmtTime(selectedSnapshot.published_at) : '-' }}</strong>
+              </div>
+              <div>
+                <span>正文完整性</span>
+                <StatusBadge :tone="snapshotTextQualityTone(selectedSnapshot)">
+                  {{ snapshotTextQualityLabel(selectedSnapshot) }}
+                </StatusBadge>
+              </div>
+              <div>
+                <span>详情补全</span>
+                <StatusBadge :tone="detailStatusTone(snapshotDetailStatus(selectedSnapshot))">
+                  {{ detailStatusLabel(snapshotDetailStatus(selectedSnapshot)) }}
+                </StatusBadge>
+              </div>
+            </div>
+
+            <div v-if="snapshotDetailError(selectedSnapshot)" class="snapshot-note">
+              {{ snapshotDetailError(selectedSnapshot) }}
+            </div>
+
+            <div class="snapshot-full-text">{{ selectedSnapshot.full_text || '(无正文内容)' }}</div>
+
+            <div v-if="selectedSnapshot.repost_text" class="snapshot-repost">
+              <strong>转发内容</strong>
+              <p>{{ selectedSnapshot.repost_text }}</p>
+            </div>
+
+            <div class="snapshot-actions">
+              <button class="btn" type="button" @click="closeSnapshot">关闭</button>
+              <button class="btn primary" type="button" @click="copySnapshotText">
+                {{ copiedSnapshot ? '已复制' : '复制正文' }}
+              </button>
+            </div>
+          </PanelCard>
+        </div>
+      </div>
     </template>
     <div v-else class="empty-state">内容不存在</div>
   </div>
@@ -169,7 +220,10 @@ interface MediaAsset {
 interface Snapshot {
   id: number
   version: number
+  published_at: string | null
   full_text: string | null
+  repost_text: string | null
+  raw_data: Record<string, unknown>
   captured_at: string | null
 }
 
@@ -177,6 +231,8 @@ const route = useRoute()
 const loading = ref(true)
 const post = ref<PostDetail | null>(null)
 const snapshots = ref<Snapshot[]>([])
+const selectedSnapshot = ref<Snapshot | null>(null)
+const copiedSnapshot = ref(false)
 
 const imageAssets = computed(() => post.value?.media_assets.filter((asset) => asset.asset_type === 'image') ?? [])
 const videoCoverAssets = computed(() => post.value?.media_assets.filter((asset) => asset.asset_type === 'video_cover') ?? [])
@@ -237,6 +293,56 @@ function detailStatusLabel(status: string): string {
     unknown: '未知',
   }
   return labels[status] || status || '未知'
+}
+
+function openSnapshot(snapshot: Snapshot) {
+  selectedSnapshot.value = snapshot
+  copiedSnapshot.value = false
+}
+
+function closeSnapshot() {
+  selectedSnapshot.value = null
+  copiedSnapshot.value = false
+}
+
+async function copySnapshotText() {
+  if (!selectedSnapshot.value?.full_text) return
+  await navigator.clipboard.writeText(selectedSnapshot.value.full_text)
+  copiedSnapshot.value = true
+  window.setTimeout(() => {
+    copiedSnapshot.value = false
+  }, 1600)
+}
+
+function snapshotMeta(snapshot: Snapshot): Record<string, unknown> {
+  const rawMeta = snapshot.raw_data?._archivelens
+  return rawMeta && typeof rawMeta === 'object' ? rawMeta as Record<string, unknown> : {}
+}
+
+function snapshotDetailStatus(snapshot: Snapshot): string {
+  const status = snapshotMeta(snapshot).detail_enrich_status
+  return typeof status === 'string' ? status : 'unknown'
+}
+
+function snapshotDetailError(snapshot: Snapshot): string | null {
+  const error = snapshotMeta(snapshot).detail_enrich_error
+  return typeof error === 'string' && error.trim() ? error : null
+}
+
+function snapshotTextQualityTone(snapshot: Snapshot): StatusTone {
+  const meta = snapshotMeta(snapshot)
+  if (meta.detail_enriched === true) return 'green'
+  if (meta.text_suspected_truncated === true) return 'yellow'
+  if (snapshotDetailStatus(snapshot) === 'failed') return 'red'
+  return 'green'
+}
+
+function snapshotTextQualityLabel(snapshot: Snapshot): string {
+  const meta = snapshotMeta(snapshot)
+  if (meta.detail_enriched === true) return '已详情补全'
+  if (meta.text_suspected_truncated === true) return '疑似截断'
+  if (snapshotDetailStatus(snapshot) === 'failed') return '补全失败'
+  return '未发现截断'
 }
 
 onMounted(loadDetail)
