@@ -2,6 +2,26 @@
 
 单用户多平台博主内容监控归档系统，用于通过授权登录态监控微博、雪球博主内容，并归档正文、图片、视频封面、原文链接和编辑历史。
 
+ArchiveLens is a self-hosted content archiving dashboard for monitoring authorized public posts from Weibo and Xueqiu.
+
+## 项目亮点
+
+- 授权登录态采集：复用用户自己的微博 / 雪球登录态，不提供验证码绕过、代理池或 Cookie 共享能力。
+- 内容归档闭环：保存正文、图片、视频封面、原文链接、发布时间、编辑状态和历史快照。
+- 后台管理 UI：提供平台连接、监控博主、导入任务、内容归档、媒体资源、通知记录、运行日志和系统设置页面。
+- 异步任务架构：通过 Celery worker、beat、media-worker 分离监控、导入和媒体下载任务。
+- 可部署 MVP：包含 Docker Compose、本地开发环境、生产部署说明和数据库迁移。
+
+## 技术栈
+
+| 模块 | 技术 |
+| --- | --- |
+| Backend | FastAPI, SQLAlchemy, Alembic, Celery |
+| Frontend | Vue 3, Vite, TypeScript, Pinia |
+| Storage | PostgreSQL, Redis, local media archive |
+| Platform probes | Playwright, HTTP platform adapters |
+| Deployment | Docker Compose, NGINX frontend proxy |
+
 ## 文档
 
 项目文档已集中放在 `docs/`：
@@ -13,7 +33,7 @@
 
 ## 当前工程状态
 
-当前已具备微博单平台闭环：
+当前已具备微博监控归档闭环，并已加入雪球平台适配基础：
 
 - `backend/`：FastAPI、SQLAlchemy、Celery、Alembic
 - `backend/app/core/errors.py`：统一错误响应结构
@@ -24,6 +44,42 @@
 - `spikes/platform_probe/`：微博 / 雪球采集可行性验证脚本
 
 已实现的核心页面包括总览、平台连接、监控博主、导入任务、内容归档、媒体资源、通知记录、运行日志和系统设置。
+
+## 功能状态
+
+| 功能 | 状态 |
+| --- | --- |
+| 微博授权登录态检测 | 已实现 |
+| 微博最近内容采集与详情补全 | 已实现 |
+| 雪球 UID 解析与内容标准化 | 已实现基础能力 |
+| 内容去重、快照和编辑检测 | 已实现 |
+| 媒体资源入库与下载队列 | 已实现 |
+| 后台页面与 API 联调 | 已实现 MVP |
+| Docker 本地 / 生产部署 | 已实现 |
+| 多用户权限体系 | 暂不在 MVP 范围内 |
+
+## 系统架构
+
+```text
+Vue 3 admin UI
+  |
+  | /api/*
+  v
+FastAPI backend
+  |-- PostgreSQL: accounts, posts, snapshots, media, jobs, logs
+  |-- Redis: Celery broker and queues
+  |
+  | tasks
+  v
+Celery workers
+  |-- monitor worker: scheduled account checks
+  |-- import worker: historical imports
+  |-- media worker: image and cover archival
+  v
+Authorized platform sessions
+  |-- Weibo adapter
+  |-- Xueqiu adapter
+```
 
 ## 最快验证采集可行性
 
@@ -140,3 +196,15 @@ docker compose up --build
 ## 密钥管理
 
 不要把真实 `.env`、Redis 密码、PostgreSQL 密码、平台 session、webhook URL 提交到 Git。
+
+## Roadmap
+
+- 完善雪球完整采集分页和登录态失效处理。
+- 增强内容搜索、标签和导出能力。
+- 增加媒体下载失败的批量重试与空间占用统计。
+- 补充更多 API、worker 和前端交互测试。
+- 发布 `v0.1.0` Release，固化首个公开 MVP 版本。
+
+## License
+
+ArchiveLens is released under the MIT License. See `LICENSE` for details.
