@@ -28,6 +28,7 @@
         </div>
         <div style="grid-column:span 2;display:flex;gap:12px;justify-content:flex-end">
           <button class="btn" type="button" @click="loadSettings">重置</button>
+          <button class="btn" type="button" @click="testNotification" :disabled="testing">{{ testing ? '测试中…' : '测试通知' }}</button>
           <button class="btn primary" type="submit" :disabled="saving">{{ saving ? '保存中…' : '保存设置' }}</button>
         </div>
         <p v-if="msg" style="grid-column:span 2;color:#16a34a;font-size:13px;margin:0">{{ msg }}</p>
@@ -40,10 +41,11 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import PanelCard from '../components/PanelCard.vue'
-import { apiGet, apiPut } from '../composables/useApi'
+import { apiGet, apiPost, apiPut } from '../composables/useApi'
 
 const loading = ref(true)
 const saving = ref(false)
+const testing = ref(false)
 const msg = ref<string | null>(null)
 const error = ref<string | null>(null)
 const form = reactive<Record<string, string | number>>({
@@ -86,6 +88,23 @@ async function saveSettings() {
     error.value = e?.response?.data?.detail || '保存失败'
   }
   saving.value = false
+}
+
+async function testNotification() {
+  testing.value = true
+  msg.value = null
+  error.value = null
+  try {
+    const event = await apiPost<any>('/settings/test-notification')
+    if (event.status === 'sent') {
+      msg.value = '测试通知已发送，请检查通知群'
+    } else {
+      error.value = event.error_message || '测试通知发送失败，请检查 Webhook 配置'
+    }
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || '测试通知失败'
+  }
+  testing.value = false
 }
 
 function settingKeyToFormKey(key: string): string {

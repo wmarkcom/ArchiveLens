@@ -67,6 +67,7 @@ class PlatformAccount(Base):
     platform_account_id: Mapped[str | None] = mapped_column(String(255))
     check_interval: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notification_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     init_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="recent")
     init_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="normal")

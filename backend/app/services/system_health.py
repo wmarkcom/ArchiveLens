@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from redis import Redis
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import WorkerRunLog
+from app.models import PlatformAccount, PlatformConnection, WorkerRunLog
+from app.services.platform.registry import get_platform_adapter
 from app.workers.celery_app import celery_app
 
 
@@ -24,6 +27,14 @@ def check_redis() -> str:
             decode_responses=True,
         )
         return HEALTH_NORMAL if client.ping() else HEALTH_ERROR
+    except Exception:
+        return HEALTH_ERROR
+
+
+def check_postgres(db: Session) -> str:
+    try:
+        db.execute(text("SELECT 1"))
+        return HEALTH_NORMAL
     except Exception:
         return HEALTH_ERROR
 
@@ -132,6 +143,74 @@ def check_celery_beat(db: Session) -> str:
         return HEALTH_WARNING
 
     return HEALTH_NORMAL
+
+
+def check_platform_logins() -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for platform in ("weibo", "xueqiu"):
+        try:
+            adapter = get_platform_adapter(
+                platform,
+                storage_state_path=settings.platform_auth_state_path(platform),
+            )
+            statuses[platform] = HEALTH_NORMAL if asyncio.run(adapter.check_login()) else HEALTH_ERROR
+        except Exception:
+            statuses[platform] = HEALTH_ERROR
+    return statuses
+
+
+def collect_health_snapshot(db: Session, *, live_platform_check: bool = False) -> dict:
+    celery_worker_status, media_worker_status = check_celery_workers()
+    worker_status = check_monitor_worker(db, celery_worker_status)
+    beat_status = check_celery_beat(db)
+    monitor_queue_status, monitor_queue_depth, media_queue_status, media_queue_depth = check_celery_queues()
+    connection_rows = db.query(PlatformConnection).order_by(PlatformConnection.platform).all()
+    connection_statuses = {row.platform: row.status for row in connection_rows}
+    if live_platform_check:
+        platform_login_statuses = check_platform_logins()
+    else:
+        platform_login_statuses = {
+            platform: HEALTH_NORMAL if status == "connected" else HEALTH_ERROR
+            for platform, status in connection_statuses.items()
+        }
+
+    checks = {
+        "postgres": check_postgres(db),
+        "redis": check_redis(),
+        "worker": worker_status,
+        "beat": beat_status,
+        "media_worker": media_worker_status,
+        "monitor_queue": monitor_queue_status,
+        "media_queue": media_queue_status,
+        "weibo_login": platform_login_statuses.get("weibo", HEALTH_ERROR),
+        "xueqiu_login": platform_login_statuses.get("xueqiu", HEALTH_ERROR),
+    }
+    failed_checks = [name for name, status in checks.items() if status == HEALTH_ERROR]
+    warning_checks = [name for name, status in checks.items() if status == HEALTH_WARNING]
+    overall = HEALTH_ERROR if failed_checks else HEALTH_WARNING if warning_checks else HEALTH_NORMAL
+    enabled_accounts = db.query(PlatformAccount).filter(PlatformAccount.is_enabled.is_(True)).count()
+    failed_accounts = (
+        db.query(PlatformAccount)
+        .filter(PlatformAccount.is_enabled.is_(True), PlatformAccount.status == "failed")
+        .count()
+    )
+
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "overall": overall,
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "warning_checks": warning_checks,
+        "queues": {
+            "monitor": monitor_queue_depth,
+            "media": media_queue_depth,
+        },
+        "connections": connection_statuses,
+        "accounts": {
+            "enabled": enabled_accounts,
+            "failed": failed_accounts,
+        },
+    }
 
 
 def _queue_status(depth: int, warning_threshold: int, critical_threshold: int) -> str:

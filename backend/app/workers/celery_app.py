@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -18,6 +19,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     imports=[
         "app.workers.health_tasks",
+        "app.workers.notification_tasks",
         "app.workers.monitor_tasks",
         "app.workers.import_tasks",
         "app.workers.media_tasks",
@@ -27,6 +29,14 @@ celery_app.conf.update(
             "task": "monitor.scan_due_accounts",
             "schedule": settings.monitor_scan_interval,
             "options": {"expires": max(settings.monitor_scan_interval * 2, 60)},
+        },
+        "health.daily_check": {
+            "task": "health.daily_check",
+            "schedule": crontab(
+                hour=settings.daily_health_check_hour,
+                minute=settings.daily_health_check_minute,
+            ),
+            "options": {"expires": 3600},
         },
     },
     task_routes={

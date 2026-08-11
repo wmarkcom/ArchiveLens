@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models import NotificationEvent
 from app.schemas.common import Pagination, SuccessResponse
 from app.schemas.notifications import NotificationEventOut, NotificationPage
+from app.workers.notification_tasks import resend_notification_event
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -47,7 +48,5 @@ def resend_notification(event_id: int, db: Session = Depends(get_db)) -> Success
         raise HTTPException(status_code=404, detail="通知记录不存在")
     if event.status != "failed":
         raise HTTPException(status_code=400, detail="仅发送失败的通知可以重发")
-    event.status = "pending"
-    event.error_message = None
-    db.commit()
-    return SuccessResponse(message="通知已重新排队")
+    task = resend_notification_event.delay(event_id)
+    return SuccessResponse(message=f"通知已重新排队：{task.id}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import aiohttp
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models import NotificationEvent, SystemSetting
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,22 @@ class NotifierService:
         self._db.commit()
         return event
 
+    def is_configured(self) -> bool:
+        return bool(self._get_webhook_url(self._get_channel()))
+
+    def resend_event(self, event: NotificationEvent) -> NotificationEvent:
+        event.status = "pending"
+        event.error_message = None
+        self._db.commit()
+        success = self._try_send(event)
+        if success:
+            event.status = "sent"
+            event.sent_at = datetime.now(timezone.utc)
+        else:
+            event.status = "failed"
+        self._db.commit()
+        return event
+
     def _try_send(self, event: NotificationEvent) -> bool:
         webhook_url = self._get_webhook_url(event.channel)
         if not webhook_url:
@@ -79,13 +97,30 @@ class NotifierService:
             async with session.post(
                 webhook_url,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=settings.notification_timeout_seconds),
             ) as response:
-                if response.status in (200, 204):
-                    return True
                 text = await response.text()
-                event.error_message = f"HTTP {response.status}: {text[:400]}"
-                return response.status < 500
+                if response.status not in (200, 204):
+                    event.error_message = f"HTTP {response.status}: {text[:400]}"
+                    return False
+                if response.status == 204 or not text.strip():
+                    return True
+                try:
+                    response_data = json.loads(text)
+                except json.JSONDecodeError:
+                    return True
+                if not isinstance(response_data, dict):
+                    event.error_message = f"Webhook returned an invalid response: {text[:400]}"
+                    return False
+                if event.channel == "feishu":
+                    code = response_data.get("code", response_data.get("StatusCode"))
+                else:
+                    code = response_data.get("errcode")
+                if code not in (None, 0, "0"):
+                    message = response_data.get("msg") or response_data.get("StatusMessage") or text[:400]
+                    event.error_message = f"Webhook rejected notification: {message}"
+                    return False
+                return True
 
     def _build_feishu_message(self, event: NotificationEvent) -> dict:
         elements: list[dict] = []
@@ -95,7 +130,7 @@ class NotifierService:
             "msg_type": "interactive",
             "card": {
                 "header": {
-                    "title": {"tag": "plain_text", "content": event.title},
+                    "title": {"tag": "plain_text", "content": f"ArchiveLens | {event.title}"},
                     "template": "blue",
                 },
                 "elements": elements,
@@ -117,4 +152,7 @@ class NotifierService:
         setting = self._db.query(SystemSetting).filter(SystemSetting.key == key).first()
         if setting and setting.value:
             return setting.value.strip()
-        return None
+        return {
+            "feishu": settings.feishu_webhook,
+            "wecom": settings.wecom_webhook,
+        }.get(channel) or None

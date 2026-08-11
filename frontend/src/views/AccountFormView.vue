@@ -30,6 +30,13 @@
           <label>检查频率（秒）</label>
           <input v-model.number="form.check_interval" type="number" min="60" placeholder="300" />
         </div>
+        <div class="field" style="grid-column:span 2;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <label>通知推送</label>
+            <div class="helper-note" style="margin:4px 0 0">开启后，该博主的新内容、编辑和异常会推送到当前通知渠道。</div>
+          </div>
+          <ToggleSwitch v-model="form.notification_enabled" />
+        </div>
         <div class="field">
           <label>初始化模式</label>
           <select v-model="form.init_mode">
@@ -58,6 +65,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PanelCard from '../components/PanelCard.vue'
+import ToggleSwitch from '../components/ToggleSwitch.vue'
 import { apiGet, apiPost, apiPut } from '../composables/useApi'
 
 const router = useRouter()
@@ -71,6 +79,7 @@ const form = reactive({
   profile_url: '',
   platform_account_id: '',
   check_interval: 300,
+  notification_enabled: false,
   init_mode: 'recent',
   init_limit: 100,
 })
@@ -91,6 +100,7 @@ async function loadAccount() {
     form.profile_url = account.profile_url || ''
     form.platform_account_id = account.platform_account_id || ''
     form.check_interval = account.check_interval ?? 300
+    form.notification_enabled = Boolean(account.notification_enabled)
     form.init_mode = account.init_mode || 'recent'
     form.init_limit = account.init_limit ?? 100
   } catch (e: any) {
@@ -109,6 +119,7 @@ async function handleSubmit() {
       profile_url: form.profile_url,
       platform_account_id: form.platform_account_id || null,
       check_interval: form.check_interval,
+      notification_enabled: form.notification_enabled,
       init_mode: form.init_mode,
       init_limit: form.init_limit,
     }

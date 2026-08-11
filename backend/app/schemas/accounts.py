@@ -15,6 +15,7 @@ class PlatformAccountOut(BaseModel):
     platform_account_id: str | None = None
     check_interval: int = 300
     is_enabled: bool = True
+    notification_enabled: bool = False
     init_mode: str = "recent"
     init_limit: int = 100
     status: str = "normal"
@@ -33,6 +34,7 @@ class AccountCreateRequest(BaseModel):
     profile_url: str = Field(..., min_length=1)
     platform_account_id: str | None = None
     check_interval: int = Field(default=300, ge=60)
+    notification_enabled: bool = False
     init_mode: str = Field(default="recent", pattern=r"^(none|recent|all)$")
     init_limit: int = Field(default=100, ge=0)
 
@@ -43,6 +45,7 @@ class AccountUpdateRequest(BaseModel):
     platform_account_id: str | None = None
     check_interval: int | None = Field(default=None, ge=60)
     is_enabled: bool | None = None
+    notification_enabled: bool | None = None
     init_mode: str | None = Field(default=None, pattern=r"^(none|recent|all)$")
     init_limit: int | None = Field(default=None, ge=0)
 

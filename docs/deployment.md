@@ -88,6 +88,11 @@ mkdir -p data/auth data/media data/logs
 - `WEIBO_DETAIL_FALLBACK_LIMIT=3`：每轮最多补全文的微博条数；生产环境不要设太大。
 - `WEIBO_DETAIL_TIMEOUT_MS=10000`：微博详情页补全文单页超时，避免 Playwright 长时间卡住。
 - `WEIBO_LIST_TIMEOUT_MS=30000`：微博轻量列表接口总超时；列表采集不会启动 Chromium。
+- `DAILY_HEALTH_CHECK_HOUR=20`、`DAILY_HEALTH_CHECK_MINUTE=0`：每日健康检查时间，按 `Asia/Shanghai` 执行。
+- `NOTIFICATION_TIMEOUT_SECONDS=10`：飞书/企业微信 Webhook 请求超时时间。
+- `NOTIFICATION_MAX_POSTS=5`：单条通知最多展示的微博数量。
+- `NOTIFICATION_EXCERPT_LENGTH=240`：通知中每条正文摘要的最大字符数。
+- `PUBLIC_APP_URL=http://服务器IP:10000`：飞书通知中的 ArchiveLens 详情链接根地址。
 - `MONITOR_CHECK_SOFT_TIME_LIMIT=180`：单个博主检查任务软超时秒数。
 - `MONITOR_CHECK_TIME_LIMIT=240`：单个博主检查任务硬超时秒数。
 - `MONITOR_QUEUE_WARNING_THRESHOLD=100`、`MONITOR_QUEUE_CRITICAL_THRESHOLD=500`：检查队列告警阈值。
@@ -209,6 +214,34 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f beat
 ```text
 /dashboard
 /worker-logs
+```
+
+## 飞书通知与每日健康检查
+
+项目使用 Celery Beat 按 `Asia/Shanghai` 时区每天 20:00 投递 `health.daily_check` 任务，由普通 Worker 执行。健康检查包括 PostgreSQL、Redis、Worker、Beat、Media Worker、队列深度、微博登录态和雪球登录态。
+
+通知渠道可以通过两种方式配置，优先使用后台“系统设置”里保存的 Webhook；如果数据库里没有配置，则使用 `.env` 或 `.env.prod` 中的 `FEISHU_WEBHOOK` / `WECOM_WEBHOOK`。Webhook 不要提交到 GitHub。
+
+配置飞书机器人后，在后台执行：
+
+```text
+系统设置 → 通知渠道选择“飞书” → 填写飞书 Webhook URL → 保存设置 → 测试通知
+```
+
+系统会推送每日健康摘要，以及已开启“通知推送”的博主的新内容、内容编辑、登录失效和媒体下载失败等事件。新内容通知会包含正文摘要、媒体数量、ArchiveLens 归档详情链接和微博原文链接。通知发送失败会保存在“通知记录”，可以手动重发。
+
+博主通知默认关闭。在“监控博主 → 编辑”中打开“通知推送”，只为需要关注的博主发送事件；不会因为新增博主而自动加入推送。
+
+检查 Beat 是否已经加载每日任务：
+
+```bash
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod logs --since=24h beat | grep 'health.daily_check'
+```
+
+修改后端代码或依赖后，重建 backend、worker、media-worker 和 beat：
+
+```bash
+sudo docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --force-recreate backend worker media-worker beat
 ```
 
 ## 更新部署

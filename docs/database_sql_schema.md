@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS platform_accounts (
 
   check_interval INTEGER NOT NULL DEFAULT 300,
   is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  notification_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 
   init_mode VARCHAR(32) NOT NULL DEFAULT 'recent',
   init_limit INTEGER NOT NULL DEFAULT 100,

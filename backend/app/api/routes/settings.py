@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 from app.core.security import require_admin_token
 from app.db.session import get_db
 from app.models import SystemSetting
+from app.schemas.notifications import NotificationEventOut
 from app.schemas.settings import SettingsBulkUpdateRequest, SystemSettingOut
+from app.services.notifier import NotifierService
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -29,3 +31,14 @@ def update_settings(
     db.commit()
     rows = db.query(SystemSetting).order_by(SystemSetting.key).all()
     return [SystemSettingOut.model_validate(row) for row in rows]
+
+
+@router.post("/test-notification", response_model=NotificationEventOut)
+def test_notification(db: Session = Depends(get_db)) -> NotificationEventOut:
+    event = NotifierService(db).send_event(
+        event_type="system",
+        title="通知测试",
+        body="通知链路测试成功。后续健康检查和已开启推送的博主事件会通过当前渠道发送。",
+        payload={"test": True},
+    )
+    return NotificationEventOut.model_validate(event)

@@ -40,6 +40,14 @@ class Settings:
     monitor_queue_critical_threshold: int = int(os.getenv("MONITOR_QUEUE_CRITICAL_THRESHOLD", "500"))
     media_queue_warning_threshold: int = int(os.getenv("MEDIA_QUEUE_WARNING_THRESHOLD", "500"))
     media_queue_critical_threshold: int = int(os.getenv("MEDIA_QUEUE_CRITICAL_THRESHOLD", "2000"))
+    daily_health_check_hour: int = int(os.getenv("DAILY_HEALTH_CHECK_HOUR", "20"))
+    daily_health_check_minute: int = int(os.getenv("DAILY_HEALTH_CHECK_MINUTE", "0"))
+    notification_timeout_seconds: int = int(os.getenv("NOTIFICATION_TIMEOUT_SECONDS", "10"))
+    notification_max_posts: int = int(os.getenv("NOTIFICATION_MAX_POSTS", "5"))
+    notification_excerpt_length: int = int(os.getenv("NOTIFICATION_EXCERPT_LENGTH", "240"))
+    feishu_webhook: str = os.getenv("FEISHU_WEBHOOK", "").strip()
+    wecom_webhook: str = os.getenv("WECOM_WEBHOOK", "").strip()
+    public_app_url: str = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
     session_secret_key: str = os.getenv("SESSION_SECRET_KEY", "change-me")
 
     @cached_property

@@ -38,6 +38,7 @@
               <th>博主</th>
               <th>平台 ID</th>
               <th>检查频率</th>
+              <th>通知推送</th>
               <th>初始化</th>
               <th>最近检测</th>
               <th>下次检测</th>
@@ -54,6 +55,7 @@
               </td>
               <td>{{ acc.platform_account_id || '-' }}</td>
               <td>{{ acc.check_interval }}s</td>
+              <td><StatusBadge :tone="acc.notification_enabled ? 'green' : 'slate'">{{ acc.notification_enabled ? '已开启' : '未开启' }}</StatusBadge></td>
               <td>{{ initModeLabel(acc.init_mode) }}</td>
               <td>{{ acc.last_checked_at ? fmtTime(acc.last_checked_at) : '从未' }}</td>
               <td>{{ nextCheckLabel(acc) }}</td>
@@ -106,6 +108,7 @@ interface Account {
   platform_account_id: string | null
   check_interval: number
   is_enabled: boolean
+  notification_enabled: boolean
   init_mode: string
   init_limit: number
   status: string

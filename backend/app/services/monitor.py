@@ -86,6 +86,8 @@ class MonitorService:
 
             new_count = 0
             edited_count = 0
+            new_post_ids: list[int] = []
+            edited_post_ids: list[int] = []
             affected_post_ids: set[int] = set()
 
             for item in items:
@@ -106,11 +108,13 @@ class MonitorService:
                     self._db.flush()
                     _create_media_assets(self._db, post, item)
                     affected_post_ids.add(post.id)
+                    new_post_ids.append(post.id)
                     new_count += 1
                 elif existing.content_hash != new_hash:
                     _create_snapshot(self._db, existing)
                     _update_post(existing, item, new_hash)
                     affected_post_ids.add(existing.id)
+                    edited_post_ids.append(existing.id)
                     edited_count += 1
                 else:
                     existing.missing_count = 0
@@ -135,6 +139,8 @@ class MonitorService:
                 "status": "success",
                 "new_posts": new_count,
                 "edited_posts": edited_count,
+                "new_post_ids": new_post_ids,
+                "edited_post_ids": edited_post_ids,
                 "queued_media_tasks": queued_media_tasks,
             }
         except PlatformAuthenticationError as exc:

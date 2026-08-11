@@ -16,6 +16,7 @@ from app.schemas.notifications import NotificationEventOut
 from app.schemas.posts import PostListItem
 from app.services.media_urls import media_asset_preview_url
 from app.services.system_health import (
+    check_postgres,
     check_celery_beat,
     check_celery_queues,
     check_celery_workers,
@@ -93,6 +94,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     xueqiu_login = "normal" if xueqiu_conn and xueqiu_conn.status == "connected" else "warning"
 
     health = HealthStatus(
+        postgres=check_postgres(db),
         redis=check_redis(),
         worker=worker_status,
         beat=check_celery_beat(db),
