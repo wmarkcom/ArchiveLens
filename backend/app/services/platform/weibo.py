@@ -436,15 +436,17 @@ class WeiboAdapter(PlatformAdapter):
         self.detail_timeout_ms = detail_timeout_ms
         self.list_timeout_ms = list_timeout_ms
 
-    async def check_login(self) -> bool:
+    async def check_login(self, account_id: str | None = None) -> bool:
         if not self.storage_state_path.exists():
             return False
         if not has_weibo_auth_cookie(self.storage_state_path):
             return False
+        if not account_id:
+            return True
         try:
             await fetch_mblog_payload(
                 storage_state_path=self.storage_state_path,
-                uid="1002568141",
+                uid=account_id,
                 page_no=1,
                 timeout_ms=self.list_timeout_ms,
             )

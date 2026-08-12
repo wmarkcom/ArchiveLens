@@ -248,14 +248,16 @@ class XueqiuAdapter(PlatformAdapter):
     def __init__(self, storage_state_path: str | Path) -> None:
         self.storage_state_path = Path(storage_state_path)
 
-    async def check_login(self) -> bool:
+    async def check_login(self, account_id: str | None = None) -> bool:
         if not self.storage_state_path.exists():
             return False
         if not has_xueqiu_auth_cookie(self.storage_state_path):
             return False
+        if not account_id:
+            return True
         try:
-            result = await self.fetch_history_page("5672579962", cursor="1", limit=1)
-            return bool(result.items)
+            await self.fetch_history_page(account_id, cursor="1", limit=1)
+            return True
         except Exception:
             return False
 

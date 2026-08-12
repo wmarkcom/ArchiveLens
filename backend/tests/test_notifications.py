@@ -1,9 +1,15 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from types import SimpleNamespace
 
 from app.core.config import settings
 from app.schemas.accounts import AccountCreateRequest
+from app.services.system_health import (
+    HEALTH_ERROR,
+    HEALTH_NORMAL,
+    HEALTH_WARNING,
+    check_celery_beat,
+    check_celery_workers,
+)
 from app.services.notifier import NotifierService
 from app.workers.monitor_tasks import _format_post_notification
 from app.workers.celery_app import celery_app
@@ -35,6 +41,24 @@ def test_daily_health_check_is_scheduled_at_eight_pm() -> None:
 
     assert schedule.hour == {20}
     assert schedule.minute == {0}
+
+
+def test_beat_heartbeat_is_scheduled_with_monitor_scan() -> None:
+    entry = celery_app.conf.beat_schedule["health.beat_heartbeat"]
+
+    assert entry["task"] == "health.beat_heartbeat"
+    assert entry["schedule"] == settings.monitor_scan_interval
+
+
+def test_beat_health_uses_heartbeat_key(monkeypatch) -> None:
+    client = MagicMock()
+    client.exists.return_value = 1
+    monkeypatch.setattr("app.services.system_health.Redis.from_url", lambda *args, **kwargs: client)
+
+    assert check_celery_beat() == HEALTH_NORMAL
+
+    client.exists.return_value = 0
+    assert check_celery_beat() == HEALTH_WARNING
 
 
 def test_account_notification_is_opt_in() -> None:
@@ -75,3 +99,21 @@ def test_post_notification_contains_archive_detail_and_excerpt(monkeypatch) -> N
     assert "这是一条需要发送到飞书的归档正文" in body
     assert "归档详情：http://localhost:5173/posts/123" in body
     assert "微博原文：https://weibo.com/100/abc" in body
+
+
+def test_worker_health_requires_a_default_queue_for_monitor_worker() -> None:
+    inspector = MagicMock()
+    inspector.ping.return_value = {"celery@random-host": {"ok": "pong"}}
+    inspector.active_queues.return_value = {
+        "celery@random-host": [{"name": "media"}],
+    }
+
+    original_inspect = celery_app.control.inspect
+    celery_app.control.inspect = MagicMock(return_value=inspector)
+    try:
+        worker_status, media_worker_status = check_celery_workers()
+    finally:
+        celery_app.control.inspect = original_inspect
+
+    assert worker_status == HEALTH_ERROR
+    assert media_worker_status == HEALTH_NORMAL

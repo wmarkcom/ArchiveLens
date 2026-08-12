@@ -1,7 +1,9 @@
+from redis import Redis
+
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.notifier import NotifierService
-from app.services.system_health import collect_health_snapshot
+from app.services.system_health import BEAT_HEARTBEAT_KEY, collect_health_snapshot
 from app.services.worker_logs import finish_worker_run, start_worker_run
 from app.workers.celery_app import celery_app
 
@@ -9,6 +11,19 @@ from app.workers.celery_app import celery_app
 @celery_app.task(name="health.ping")
 def ping() -> str:
     return "pong"
+
+
+@celery_app.task(name="health.beat_heartbeat")
+def beat_heartbeat() -> dict:
+    ttl = max(settings.monitor_scan_interval * 3, 90)
+    client = Redis.from_url(
+        settings.redis_url,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+        decode_responses=True,
+    )
+    client.set(BEAT_HEARTBEAT_KEY, "1", ex=ttl)
+    return {"status": "success", "ttl": ttl}
 
 
 @celery_app.task(name="health.daily_check")
@@ -28,14 +43,15 @@ def daily_health_check() -> dict:
             body=_format_health_message(snapshot),
             payload=snapshot,
         )
+        task_status = "success" if event.status == "sent" else "failed"
         result = {
-            "status": "success",
+            "status": task_status,
             "overall": snapshot["overall"],
             "failed_checks": snapshot["failed_checks"],
             "warning_checks": snapshot["warning_checks"],
             "notification_status": event.status,
         }
-        finish_worker_run(db, run_log, status="success", result=result, error_message=event.error_message)
+        finish_worker_run(db, run_log, status=task_status, result=result, error_message=event.error_message)
         return result
     except Exception as exc:
         finish_worker_run(db, run_log, status="failed", error_message=str(exc))

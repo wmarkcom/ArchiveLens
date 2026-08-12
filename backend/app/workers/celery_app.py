@@ -38,6 +38,11 @@ celery_app.conf.update(
             ),
             "options": {"expires": 3600},
         },
+        "health.beat_heartbeat": {
+            "task": "health.beat_heartbeat",
+            "schedule": settings.monitor_scan_interval,
+            "options": {"expires": max(settings.monitor_scan_interval * 2, 60)},
+        },
     },
     task_routes={
         "media.download_asset": {"queue": "media"},

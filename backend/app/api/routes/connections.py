@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import require_admin_token
 from app.db.session import get_db
-from app.models import PlatformConnection, PlatformLoginSession
+from app.models import PlatformAccount, PlatformConnection, PlatformLoginSession
 from app.schemas.common import SuccessResponse
 from app.schemas.connections import LoginSession, PlatformAuthStateOut, PlatformConnectionOut
 from app.services.auth_state import auth_state_status, delete_auth_state, save_uploaded_auth_state
@@ -22,7 +22,7 @@ from app.services.browser_login import (
     start_browser_login,
 )
 from app.services.monitor_trigger import enqueue_monitor_scan
-from app.services.platform.registry import get_platform_adapter
+from app.services.platform.registry import get_platform_adapter, resolve_platform_account_id
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -197,7 +197,18 @@ def refresh_connection(platform: str, db: Session = Depends(get_db)) -> Platform
             error_message = None
         else:
             adapter = get_platform_adapter(platform, storage_state_path=storage_path)
-            is_valid = asyncio.run(adapter.check_login())
+            account = (
+                db.query(PlatformAccount)
+                .filter(PlatformAccount.platform == platform, PlatformAccount.is_enabled.is_(True))
+                .order_by(PlatformAccount.id.asc())
+                .first()
+            )
+            account_id = (
+                resolve_platform_account_id(platform, account.platform_account_id, account.profile_url)
+                if account
+                else None
+            )
+            is_valid = asyncio.run(adapter.check_login(account_id))
             error_message = None
 
         if is_valid:

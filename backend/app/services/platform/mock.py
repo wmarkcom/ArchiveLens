@@ -4,7 +4,7 @@ from app.services.platform.base import PageResult, PlatformAdapter
 class MockPlatformAdapter(PlatformAdapter):
     platform = "mock"
 
-    async def check_login(self) -> bool:
+    async def check_login(self, account_id: str | None = None) -> bool:
         return True
 
     async def fetch_recent_posts(self, account_id: str, limit: int = 20) -> PageResult:

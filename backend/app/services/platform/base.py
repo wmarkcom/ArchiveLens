@@ -33,7 +33,7 @@ class PlatformAdapter(ABC):
     platform: str
 
     @abstractmethod
-    async def check_login(self) -> bool:
+    async def check_login(self, account_id: str | None = None) -> bool:
         raise NotImplementedError
 
     @abstractmethod
