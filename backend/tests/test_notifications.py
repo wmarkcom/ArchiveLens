@@ -50,6 +50,13 @@ def test_beat_heartbeat_is_scheduled_with_monitor_scan() -> None:
     assert entry["schedule"] == settings.monitor_scan_interval
 
 
+def test_platform_session_health_is_scheduled() -> None:
+    entry = celery_app.conf.beat_schedule["health.platform_sessions"]
+
+    assert entry["task"] == "health.platform_sessions"
+    assert entry["schedule"] == settings.platform_session_check_interval
+
+
 def test_beat_health_uses_heartbeat_key(monkeypatch) -> None:
     client = MagicMock()
     client.exists.return_value = 1

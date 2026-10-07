@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import APIRequestContext, async_playwright
 
-from app.services.platform.base import NormalizedPost, PageResult, PlatformAdapter
+from app.services.platform.base import NormalizedPost, PageResult, PlatformAdapter, PlatformAuthenticationError
 
 
 XUEQIU_BASE_URL = "https://xueqiu.com"
@@ -192,16 +192,19 @@ async def parse_xueqiu_json_response(response: Any) -> dict[str, Any]:
     content_type = response.headers.get("content-type", "")
     text = body.decode("utf-8", errors="replace")
     if text.lstrip().startswith("<"):
-        raise RuntimeError("雪球接口返回 HTML，可能触发风控或登录态不可用，请刷新 xueqiu.json")
+        raise PlatformAuthenticationError("雪球接口返回登录/风控页面，请刷新 xueqiu.json")
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"雪球接口返回非 JSON：{exc.msg}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("雪球接口返回结构异常")
+    message = str(payload.get("message") or payload.get("error") or "")
+    auth_markers = ("登录", "未登录", "认证", "unauthorized", "login", "token", "cookie")
+    if response.status in {401, 403} or any(marker in message.lower() for marker in auth_markers):
+        raise PlatformAuthenticationError(f"雪球登录态验证失败：{message or f'HTTP {response.status}'}")
     if response.status >= 400:
-        message = payload.get("message") or payload.get("error") or f"HTTP {response.status}"
-        raise RuntimeError(f"雪球接口请求失败：{message}")
+        raise RuntimeError(f"雪球接口请求失败：{message or f'HTTP {response.status}'}")
     if "json" not in content_type.lower() and not extract_status_items(payload):
         raise RuntimeError("雪球接口响应不是有效的时间线 JSON")
     return payload
@@ -258,7 +261,7 @@ class XueqiuAdapter(PlatformAdapter):
         try:
             await self.fetch_history_page(account_id, cursor="1", limit=1)
             return True
-        except Exception:
+        except PlatformAuthenticationError:
             return False
 
     async def fetch_recent_posts(self, account_id: str, limit: int = 20) -> PageResult:

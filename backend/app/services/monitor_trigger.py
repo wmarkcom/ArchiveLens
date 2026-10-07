@@ -11,3 +11,13 @@ def enqueue_monitor_scan() -> str | None:
     except Exception:
         logger.exception("Failed to enqueue monitor scan")
         return None
+
+
+def enqueue_platform_session_check(platform: str) -> str | None:
+    try:
+        from app.workers.health_tasks import check_platform_sessions
+
+        return str(check_platform_sessions.delay(platform).id)
+    except Exception:
+        logger.exception("Failed to enqueue platform session check")
+        return None

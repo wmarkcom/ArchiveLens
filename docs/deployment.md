@@ -89,6 +89,8 @@ mkdir -p data/auth data/media data/logs
 - `WEIBO_DETAIL_TIMEOUT_MS=10000`：微博详情页补全文单页超时，避免 Playwright 长时间卡住。
 - `WEIBO_LIST_TIMEOUT_MS=30000`：微博轻量列表接口总超时；列表采集不会启动 Chromium。
 - `DAILY_HEALTH_CHECK_HOUR=20`、`DAILY_HEALTH_CHECK_MINUTE=0`：每日健康检查时间，按 `Asia/Shanghai` 执行。
+- `PLATFORM_SESSION_CHECK_INTERVAL=21600`：每 6 小时调用平台真实接口验证登录态；微博成功响应带回的新 Cookie 会原子写回 `/data/auth/weibo.json`。
+- `PLATFORM_SESSION_FAILURE_THRESHOLD=2`：临时网络错误连续达到 2 次才把连接标记为失败；明确的登录失效会立即标记为过期。
 - `NOTIFICATION_TIMEOUT_SECONDS=10`：飞书/企业微信 Webhook 请求超时时间。
 - `NOTIFICATION_MAX_POSTS=5`：单条通知最多展示的微博数量。
 - `NOTIFICATION_EXCERPT_LENGTH=240`：通知中每条正文摘要的最大字符数。

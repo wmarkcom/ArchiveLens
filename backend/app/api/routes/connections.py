@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.security import require_admin_token
 from app.db.session import get_db
-from app.models import PlatformAccount, PlatformConnection, PlatformLoginSession
+from app.models import PlatformConnection, PlatformLoginSession
 from app.schemas.common import SuccessResponse
 from app.schemas.connections import LoginSession, PlatformAuthStateOut, PlatformConnectionOut
 from app.services.auth_state import auth_state_status, delete_auth_state, save_uploaded_auth_state
@@ -21,8 +19,7 @@ from app.services.browser_login import (
     refresh_browser_login,
     start_browser_login,
 )
-from app.services.monitor_trigger import enqueue_monitor_scan
-from app.services.platform.registry import get_platform_adapter, resolve_platform_account_id
+from app.services.session_health import check_platform_session
 
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
@@ -76,6 +73,10 @@ async def create_platform_login(platform: str, db: Session = Depends(get_db)) ->
     db.refresh(session)
 
     conn = _get_or_create_connection(db, platform)
+    session_meta = dict(conn.session_meta or {})
+    if conn.status != "pending_login":
+        session_meta["status_before_login"] = conn.status
+    conn.session_meta = session_meta
     conn.status = "pending_login"
     conn.error_message = None
     db.commit()
@@ -150,6 +151,9 @@ def logout_platform(platform: str, db: Session = Depends(get_db)) -> SuccessResp
     conn = _get_or_create_connection(db, platform)
     conn.status = "disconnected"
     conn.session_data_encrypted = None
+    conn.session_meta = {}
+    conn.expired_at = None
+    conn.error_message = None
     delete_auth_state(platform)
     db.commit()
     return SuccessResponse(message=f"{platform} 已解绑")
@@ -169,6 +173,10 @@ async def upload_auth_state(
 ) -> PlatformConnectionOut:
     conn = _get_or_create_connection(db, platform)
     status = await save_uploaded_auth_state(platform, file)
+    session_meta = dict(conn.session_meta or {})
+    if conn.status != "pending_login":
+        session_meta["status_before_login"] = conn.status
+    conn.session_meta = session_meta
     conn.session_data_encrypted = status["filename"]
     conn.status = "pending_login"
     conn.error_message = None
@@ -181,50 +189,6 @@ async def upload_auth_state(
 def refresh_connection(platform: str, db: Session = Depends(get_db)) -> PlatformConnectionOut:
     """Refresh connection status by checking login validity via platform adapter."""
     conn = _get_or_create_connection(db, platform)
-
-    storage_path = settings.platform_auth_state_path(platform)
-    state_status = auth_state_status(platform)
-
-    try:
-        if not state_status["exists"]:
-            is_valid = False
-            error_message = "登录态文件不存在"
-        elif not state_status["has_required_cookie"]:
-            is_valid = False
-            error_message = state_status["message"] or "登录态文件缺少平台关键 cookie"
-        elif platform == "xueqiu":
-            is_valid = True
-            error_message = None
-        else:
-            adapter = get_platform_adapter(platform, storage_state_path=storage_path)
-            account = (
-                db.query(PlatformAccount)
-                .filter(PlatformAccount.platform == platform, PlatformAccount.is_enabled.is_(True))
-                .order_by(PlatformAccount.id.asc())
-                .first()
-            )
-            account_id = (
-                resolve_platform_account_id(platform, account.platform_account_id, account.profile_url)
-                if account
-                else None
-            )
-            is_valid = asyncio.run(adapter.check_login(account_id))
-            error_message = None
-
-        if is_valid:
-            conn.status = "connected"
-            conn.last_login_at = conn.last_login_at or datetime.now(timezone.utc)
-            conn.session_data_encrypted = storage_path.name
-            conn.error_message = None
-        else:
-            conn.status = "expired"
-            conn.error_message = error_message or "Login check failed — session may be invalid or expired"
-    except Exception as exc:
-        conn.status = "failed"
-        conn.error_message = str(exc)[:500]
-
-    db.commit()
+    check_platform_session(db, platform)
     db.refresh(conn)
-    if conn.status == "connected":
-        enqueue_monitor_scan()
     return _connection_out(conn)

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import html
 import json
 import logging
+import os
 import re
+import stat
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.cookies import Morsel
 from pathlib import Path
-from typing import Any
+from tempfile import NamedTemporaryFile
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
@@ -268,6 +273,151 @@ def weibo_cookie_header(storage_state_path: str | Path) -> str:
     return "; ".join(pairs)
 
 
+def persist_weibo_response_cookies(
+    storage_state_path: str | Path,
+    response_cookies: Mapping[str, Morsel[str]],
+    response_url: str,
+) -> bool:
+    """Merge Weibo response cookies into Playwright storage state atomically."""
+    if not response_cookies:
+        return False
+
+    host = (urlparse(response_url).hostname or "").lower()
+    if host != "weibo.com" and not host.endswith(".weibo.com"):
+        return False
+
+    path = Path(storage_state_path)
+    lock_path = path.with_name(f"{path.name}.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            cookies = [cookie for cookie in state.get("cookies") or [] if isinstance(cookie, dict)]
+            changed = _merge_weibo_response_cookies(cookies, response_cookies, host)
+            if not changed:
+                return False
+            state["cookies"] = cookies
+            _write_storage_state_atomically(path, state)
+            return True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _merge_weibo_response_cookies(
+    cookies: list[dict[str, Any]],
+    response_cookies: Mapping[str, Morsel[str]],
+    host: str,
+) -> bool:
+    changed = False
+    now_timestamp = datetime.now(timezone.utc).timestamp()
+
+    for name, morsel in response_cookies.items():
+        domain = str(morsel["domain"] or host).lower()
+        normalized_domain = domain.lstrip(".")
+        if normalized_domain != "weibo.com" and not normalized_domain.endswith(".weibo.com"):
+            continue
+        cookie_path = str(morsel["path"] or "/")
+        existing_index = next(
+            (
+                index
+                for index, cookie in enumerate(cookies)
+                if str(cookie.get("name") or "") == name
+                and str(cookie.get("domain") or "").lower().lstrip(".") == domain.lstrip(".")
+                and str(cookie.get("path") or "/") == cookie_path
+            ),
+            None,
+        )
+        existing = cookies[existing_index] if existing_index is not None else None
+        expires, delete_cookie = _response_cookie_expiry(morsel, now_timestamp)
+
+        if delete_cookie:
+            if existing_index is not None:
+                cookies.pop(existing_index)
+                changed = True
+            continue
+
+        secure = bool(morsel["secure"]) if morsel["secure"] else bool((existing or {}).get("secure"))
+        http_only = bool(morsel["httponly"]) if morsel["httponly"] else bool((existing or {}).get("httpOnly"))
+        same_site = _normalize_same_site(str(morsel["samesite"] or "")) or (existing or {}).get("sameSite")
+        merged = {
+            **(existing or {}),
+            "name": name,
+            "value": morsel.value,
+            "domain": (existing or {}).get("domain") or domain,
+            "path": cookie_path,
+            "expires": expires,
+            "httpOnly": http_only,
+            "secure": secure,
+        }
+        if same_site:
+            merged["sameSite"] = same_site
+
+        if existing != merged:
+            if existing_index is None:
+                cookies.append(merged)
+            else:
+                cookies[existing_index] = merged
+            changed = True
+
+    return changed
+
+
+def _response_cookie_expiry(morsel: Morsel[str], now_timestamp: float) -> tuple[float, bool]:
+    max_age = str(morsel["max-age"] or "").strip()
+    if max_age:
+        try:
+            max_age_seconds = int(max_age)
+        except ValueError:
+            max_age_seconds = None
+        if max_age_seconds is not None:
+            if max_age_seconds <= 0:
+                return 0, True
+            return now_timestamp + max_age_seconds, False
+
+    expires_value = str(morsel["expires"] or "").strip()
+    if expires_value:
+        try:
+            expires_at = parsedate_to_datetime(expires_value)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_timestamp = expires_at.timestamp()
+            return expires_timestamp, expires_timestamp <= now_timestamp
+        except (TypeError, ValueError, IndexError, OverflowError):
+            pass
+    return -1, False
+
+
+def _normalize_same_site(value: str) -> str | None:
+    return {
+        "lax": "Lax",
+        "strict": "Strict",
+        "none": "None",
+    }.get(value.strip().lower())
+
+
+def _write_storage_state_atomically(path: Path, state: dict[str, Any]) -> None:
+    existing_stat = path.stat() if path.exists() else None
+    with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temp_file:
+        json.dump(state, temp_file, ensure_ascii=False, indent=2)
+        temp_file.flush()
+        os.fsync(temp_file.fileno())
+        temp_path = Path(temp_file.name)
+    try:
+        if existing_stat is not None:
+            os.chmod(temp_path, stat.S_IMODE(existing_stat.st_mode))
+            try:
+                os.chown(temp_path, existing_stat.st_uid, existing_stat.st_gid)
+            except PermissionError:
+                logger.warning("Unable to preserve owner for Weibo auth state %s", path)
+        else:
+            os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def parse_weibo_json_body(body: bytes, content_type: str | None = None) -> dict[str, Any]:
     text = decode_weibo_response_body(body, content_type)
     stripped = text.lstrip()
@@ -368,7 +518,12 @@ async def fetch_mblog_payload(
                 )
             if response.status >= 400:
                 raise RuntimeError(f"Weibo mymblog request failed: HTTP {response.status}")
-            return parse_weibo_json_body(body, response.headers.get("content-type"))
+            payload = parse_weibo_json_body(body, response.headers.get("content-type"))
+            try:
+                persist_weibo_response_cookies(storage_state_path, response.cookies, str(response.url))
+            except Exception:
+                logger.warning("Failed to persist refreshed Weibo cookies", exc_info=True)
+            return payload
 
 
 async def fetch_detail_text(context: BrowserContext, url: str, *, timeout_ms: int = 10000) -> str | None:

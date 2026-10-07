@@ -1,7 +1,11 @@
+import asyncio
 from datetime import timezone
+
+from unittest.mock import AsyncMock
 
 from app.services.platform.registry import resolve_platform_account_id
 from app.services.platform.xueqiu import (
+    XueqiuAdapter,
     extract_status_items,
     extract_xueqiu_uid,
     normalize_xueqiu_status,
@@ -56,3 +60,24 @@ def test_normalize_xueqiu_status():
 def test_extract_status_items_from_payload():
     payload = {"statuses": [{"id": 1}, {"id": 2}, "bad"]}
     assert extract_status_items(payload) == [{"id": 1}, {"id": 2}]
+
+
+def test_xueqiu_login_check_preserves_transient_errors(tmp_path, monkeypatch):
+    state_file = tmp_path / "xueqiu.json"
+    state_file.write_text(
+        '{"cookies":[{"domain":".xueqiu.com","name":"xq_a_token","value":"token"}]}',
+        encoding="utf-8",
+    )
+    adapter = XueqiuAdapter(state_file)
+    monkeypatch.setattr(
+        adapter,
+        "fetch_history_page",
+        AsyncMock(side_effect=RuntimeError("temporary network error")),
+    )
+
+    try:
+        asyncio.run(adapter.check_login("5672579962"))
+    except RuntimeError as exc:
+        assert str(exc) == "temporary network error"
+    else:
+        raise AssertionError("transient error must not be treated as expired login")

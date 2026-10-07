@@ -36,6 +36,14 @@ def test_monitor_marks_platform_expired_and_stops_future_scheduling(monkeypatch)
         side_effect=PlatformAuthenticationError("微博登录态已失效，请重新登录")
     )
     monkeypatch.setattr(monitor_module, "get_platform_adapter", lambda *args, **kwargs: adapter)
+    monkeypatch.setattr(
+        "app.services.session_health._lock_connection",
+        lambda db, platform, fallback: fallback,
+    )
+    monkeypatch.setattr(
+        "app.services.session_health._send_transition_notification",
+        lambda *args, **kwargs: None,
+    )
 
     result = MonitorService(db).check_account(account.id)
 
@@ -43,7 +51,7 @@ def test_monitor_marks_platform_expired_and_stops_future_scheduling(monkeypatch)
     assert connection.status == "expired"
     assert account.status == "failed"
     assert account.last_checked_at is not None
-    db.commit.assert_called_once()
+    assert db.commit.call_count == 2
 
 
 def test_monitor_applies_account_interval_backoff_after_transient_failure(monkeypatch) -> None:

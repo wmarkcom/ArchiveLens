@@ -42,6 +42,8 @@ class Settings:
     media_queue_critical_threshold: int = int(os.getenv("MEDIA_QUEUE_CRITICAL_THRESHOLD", "2000"))
     daily_health_check_hour: int = int(os.getenv("DAILY_HEALTH_CHECK_HOUR", "20"))
     daily_health_check_minute: int = int(os.getenv("DAILY_HEALTH_CHECK_MINUTE", "0"))
+    platform_session_check_interval: int = int(os.getenv("PLATFORM_SESSION_CHECK_INTERVAL", "21600"))
+    platform_session_failure_threshold: int = int(os.getenv("PLATFORM_SESSION_FAILURE_THRESHOLD", "2"))
     notification_timeout_seconds: int = int(os.getenv("NOTIFICATION_TIMEOUT_SECONDS", "10"))
     notification_max_posts: int = int(os.getenv("NOTIFICATION_MAX_POSTS", "5"))
     notification_excerpt_length: int = int(os.getenv("NOTIFICATION_EXCERPT_LENGTH", "240"))

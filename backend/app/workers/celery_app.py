@@ -38,6 +38,11 @@ celery_app.conf.update(
             ),
             "options": {"expires": 3600},
         },
+        "health.platform_sessions": {
+            "task": "health.platform_sessions",
+            "schedule": settings.platform_session_check_interval,
+            "options": {"expires": max(settings.platform_session_check_interval, 300)},
+        },
         "health.beat_heartbeat": {
             "task": "health.beat_heartbeat",
             "schedule": settings.monitor_scan_interval,

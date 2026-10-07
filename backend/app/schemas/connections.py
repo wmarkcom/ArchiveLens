@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PlatformAuthStateOut(BaseModel):
@@ -21,6 +21,7 @@ class PlatformConnectionOut(BaseModel):
     platform: str
     status: str
     session_data_encrypted: str | None = None
+    session_meta: dict = Field(default_factory=dict)
     auth_state: PlatformAuthStateOut | None = None
     last_login_at: datetime | None = None
     expired_at: datetime | None = None

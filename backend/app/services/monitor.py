@@ -13,6 +13,7 @@ from app.services.hashing import compute_content_hash
 from app.services.media_queue import enqueue_pending_media_for_post_ids
 from app.services.platform.base import NormalizedPost, PlatformAuthenticationError
 from app.services.platform.registry import get_platform_adapter, resolve_platform_account_id
+from app.services.session_health import mark_platform_auth_expired
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +146,12 @@ class MonitorService:
             }
         except PlatformAuthenticationError as exc:
             logger.warning("Platform login expired while checking account %s: %s", account_id, exc)
-            connection.status = "expired"
-            connection.error_message = str(exc)[:500]
+            mark_platform_auth_expired(
+                self._db,
+                account.platform,
+                str(exc),
+                connection=connection,
+            )
             account.status = "failed"
             account.error_message = str(exc)[:500]
             account.last_checked_at = datetime.now(timezone.utc)

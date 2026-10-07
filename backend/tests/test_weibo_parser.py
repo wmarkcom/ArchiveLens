@@ -1,4 +1,6 @@
 import asyncio
+import json
+from http.cookies import SimpleCookie
 
 import app.services.platform.weibo as weibo_module
 from app.services.platform.base import PlatformAuthenticationError
@@ -15,6 +17,7 @@ from app.services.platform.weibo import (
     normalize_weibo_status,
     parse_weibo_datetime,
     parse_weibo_json_body,
+    persist_weibo_response_cookies,
     strip_weibo_html,
     weibo_cookie_header,
 )
@@ -239,6 +242,63 @@ def test_weibo_cookie_header_only_includes_weibo_cookies(tmp_path) -> None:
     )
 
     assert weibo_cookie_header(state_file) == "SUB=session; XSRF-TOKEN=token"
+
+
+def test_persist_weibo_response_cookies_updates_state_atomically(tmp_path) -> None:
+    state_file = tmp_path / "weibo.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "domain": ".weibo.com",
+                        "path": "/",
+                        "name": "SUB",
+                        "value": "old",
+                        "expires": -1,
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    }
+                ],
+                "origins": [{"origin": "https://weibo.com", "localStorage": []}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_file.chmod(0o640)
+    response_cookies = SimpleCookie()
+    response_cookies.load("SUB=new; Domain=.weibo.com; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Lax")
+
+    changed = persist_weibo_response_cookies(
+        state_file,
+        response_cookies,
+        "https://weibo.com/ajax/statuses/mymblog",
+    )
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert changed is True
+    assert state["cookies"][0]["value"] == "new"
+    assert state["cookies"][0]["expires"] > 0
+    assert state["origins"][0]["origin"] == "https://weibo.com"
+    assert state_file.stat().st_mode & 0o777 == 0o640
+
+
+def test_persist_weibo_response_cookies_removes_expired_cookie(tmp_path) -> None:
+    state_file = tmp_path / "weibo.json"
+    state_file.write_text(
+        '{"cookies":[{"domain":".weibo.com","path":"/","name":"SUB","value":"old"}],"origins":[]}',
+        encoding="utf-8",
+    )
+    response_cookies = SimpleCookie()
+    response_cookies.load("SUB=deleted; Domain=.weibo.com; Path=/; Max-Age=0")
+
+    assert persist_weibo_response_cookies(
+        state_file,
+        response_cookies,
+        "https://weibo.com/ajax/statuses/mymblog",
+    )
+    assert json.loads(state_file.read_text(encoding="utf-8"))["cookies"] == []
 
 
 def test_collect_weibo_posts_uses_lightweight_http_without_playwright(tmp_path, monkeypatch) -> None:

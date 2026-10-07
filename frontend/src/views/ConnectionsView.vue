@@ -21,6 +21,10 @@
             <span>文件信息</span>
             <strong>{{ authStateMeta(conn.auth_state) }}</strong>
           </div>
+          <div class="settings-row">
+            <span>自动验证</span>
+            <strong>{{ sessionCheckMeta(conn) }}</strong>
+          </div>
           <div class="settings-row" v-if="conn.auth_state?.message">
             <span>状态说明</span>
             <strong :style="{ color: conn.auth_state.has_required_cookie ? '#16a34a' : '#d97706' }">
@@ -99,6 +103,13 @@ interface Connection {
   platform: string
   status: string
   session_data_encrypted: string | null
+  session_meta: {
+    last_checked_at?: string | null
+    last_success_at?: string | null
+    cookie_updated_at?: string | null
+    consecutive_failures?: number
+    last_error?: string | null
+  }
   auth_state: AuthState | null
   last_login_at: string | null
   error_message: string | null
@@ -161,6 +172,12 @@ function authStateMeta(authState: AuthState | null): string {
   const size = formatSize(authState.size_bytes)
   const updatedAt = authState.updated_at ? fmtDate(authState.updated_at) : '-'
   return `${size} / ${authState.cookie_count} 个 cookie / ${updatedAt}`
+}
+
+function sessionCheckMeta(conn: Connection): string {
+  const checkedAt = conn.session_meta?.last_checked_at
+  const failures = conn.session_meta?.consecutive_failures ?? 0
+  return `${checkedAt ? fmtDate(checkedAt) : '尚未自动验证'} / 连续失败 ${failures} 次`
 }
 
 function formatSize(size: number | null): string {

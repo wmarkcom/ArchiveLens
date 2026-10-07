@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import PlatformConnection, PlatformLoginSession
-from app.services.monitor_trigger import enqueue_monitor_scan
+from app.services.monitor_trigger import enqueue_monitor_scan, enqueue_platform_session_check
 from app.services.platform.weibo import WEIBO_MBLOG_ENDPOINT, parse_weibo_json_body
 
 
@@ -160,6 +160,7 @@ async def refresh_browser_login(db: Session, session: PlatformLoginSession) -> P
         }
         db.commit()
         enqueue_monitor_scan()
+        enqueue_platform_session_check(session.platform)
         await cleanup_browser_login(session.id)
         return session
 

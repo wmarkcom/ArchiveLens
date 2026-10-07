@@ -178,23 +178,13 @@ def _notify_monitor_result(db, account_id: int, result: dict) -> None:
     account = db.query(PlatformAccount).filter(PlatformAccount.id == account_id).first()
     if account is None:
         return
+    if result.get("auth_expired"):
+        return
     notifier = NotifierService(db)
     if not account.notification_enabled or not notifier.is_configured():
         return
 
     account_reference = f"博主主页：{account.profile_url}"
-    if result.get("auth_expired"):
-        notifier.send_event(
-            event_type="login_expired",
-            platform=account.platform,
-            title=f"{account.platform} 登录态已失效",
-            body=f"博主：{account.account_name}\n{account_reference}",
-            reference_id=str(account.id),
-            reference_type="platform_account",
-            payload=result,
-        )
-        return
-
     if result.get("status") in {"failed", "error"}:
         notifier.send_event(
             event_type="worker_error",

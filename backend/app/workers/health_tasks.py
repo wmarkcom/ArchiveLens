@@ -3,6 +3,7 @@ from redis import Redis
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.notifier import NotifierService
+from app.services.session_health import PLATFORMS, check_platform_session
 from app.services.system_health import BEAT_HEARTBEAT_KEY, collect_health_snapshot
 from app.services.worker_logs import finish_worker_run, start_worker_run
 from app.workers.celery_app import celery_app
@@ -52,6 +53,30 @@ def daily_health_check() -> dict:
             "notification_status": event.status,
         }
         finish_worker_run(db, run_log, status=task_status, result=result, error_message=event.error_message)
+        return result
+    except Exception as exc:
+        finish_worker_run(db, run_log, status="failed", error_message=str(exc))
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="health.platform_sessions")
+def check_platform_sessions(platform: str | None = None) -> dict:
+    platforms = (platform,) if platform else PLATFORMS
+    db = SessionLocal()
+    run_log = start_worker_run(
+        db,
+        worker_name="health",
+        task_name="health.platform_sessions",
+        payload={"platforms": list(platforms)},
+    )
+    try:
+        results = [check_platform_session(db, item) for item in platforms]
+        failed = [result for result in results if result["status"] != "valid"]
+        status = "success" if not failed else "warning"
+        result = {"status": status, "results": results}
+        finish_worker_run(db, run_log, status="success", result=result)
         return result
     except Exception as exc:
         finish_worker_run(db, run_log, status="failed", error_message=str(exc))
